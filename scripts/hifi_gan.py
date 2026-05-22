@@ -371,6 +371,10 @@ class MelSpectrogramLoss(nn.Module):
         for n_fft, hop, win in zip(self.n_ffts, self.hop_lengths, self.win_lengths):
             mel_pred = self._mel_spectrogram(y_pred, n_fft, hop, win)
             mel_true = self._mel_spectrogram(y_true, n_fft, hop, win)
+            # Align time dimension: generator upsampling may produce +/- 1 frame
+            min_t = min(mel_pred.shape[2], mel_true.shape[2])
+            mel_pred = mel_pred[:, :, :min_t]
+            mel_true = mel_true[:, :, :min_t]
             loss += self.loss_fn(mel_pred, mel_true)
         return loss / len(self.n_ffts)
 
