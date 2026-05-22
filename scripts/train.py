@@ -258,6 +258,10 @@ def train(args):
             y_shifted, y_clean = batch
             y_shifted = y_shifted.to(device)
             y_clean = y_clean.to(device)
+            # Align lengths: dataset may return slightly different durations
+            min_len = min(y_shifted.shape[-1], y_clean.shape[-1])
+            y_shifted = y_shifted[..., :min_len]
+            y_clean = y_clean[..., :min_len]
             B = y_shifted.shape[0]
 
             # ----------------------------------------------------------------
@@ -294,6 +298,7 @@ def train(args):
 
             with torch.no_grad():
                 y_gen = generator(mel_shifted, target_pitch)
+                y_gen = y_gen[..., :y_clean.shape[-1]]
 
             mpd_real, msd_real = discriminator(y_clean.unsqueeze(1))
             mpd_fake, msd_fake = discriminator(y_gen.detach())
@@ -312,6 +317,7 @@ def train(args):
             opt_g.zero_grad()
 
             y_gen = generator(mel_shifted, target_pitch)
+            y_gen = y_gen[..., :y_clean.shape[-1]]
 
             mpd_fake, msd_fake = discriminator(y_gen)
             mpd_real, msd_real = discriminator(y_clean.unsqueeze(1))
