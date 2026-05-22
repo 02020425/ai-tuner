@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Tuner - 一键修音</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 40px 0;
+    }
+    .container {
+      width: 100%;
+      max-width: 700px;
+      padding: 20px 24px;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 4px;
+      background: linear-gradient(135deg, #a855f7, #6366f1);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      text-align: center;
+      color: #888;
+      margin-bottom: 28px;
+      font-size: 14px;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+    .tab {
+      flex: 1;
+      padding: 12px 8px;
+      text-align: center;
+      border-radius: 8px;
+      cursor: pointer;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      color: #888;
+      font-size: 14px;
+      transition: all 0.15s;
+    }
+    .tab.active {
+      background: #1e1b4b;
+      border-color: #6366f1;
+      color: #e0e0e0;
+    }
+    .tab:hover { border-color: #444; }
+    .tab.active:hover { border-color: #6366f1; }
+
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #ccc;
+    }
+
+    .upload-area {
+      border: 2px dashed #333;
+      border-radius: 10px;
+      padding: 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      margin-bottom: 12px;
+    }
+    .upload-area:hover { border-color: #6366f1; }
+    .upload-area.has-file { border-color: #22c55e; border-style: solid; }
+    .upload-icon { font-size: 36px; margin-bottom: 8px; }
+    .upload-text { font-size: 14px; color: #888; }
+    input[type="file"] { display: none; }
+
+    .options {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .option label {
+      display: block;
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    .option select, .option input {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      font-size: 14px;
+    }
+
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #a855f7);
+      color: white;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Result styles */
+    .result {
+      display: none;
+      background: #1a2e1a;
+      border: 1px solid #22c55e33;
+      border-radius: 10px;
+      padding: 16px;
+      margin-top: 16px;
+    }
+    .result.show { display: block; }
+    .result .stat { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+    .result .stat span:first-child { color: #888; }
+    .btn-download {
+      display: block;
+      text-align: center;
+      padding: 10px;
+      background: #22c55e;
+      color: #000;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: 600;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+    .btn-download:hover { opacity: 0.9; }
+
+    /* Comparison layout */
+    .compare-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 16px;
+    }
+    @media (max-width: 600px) {
+      .compare-row { grid-template-columns: 1fr; }
+    }
+    .compare-card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .compare-card h3 {
+      font-size: 14px;
+      margin-bottom: 12px;
+      font-weight: 600;
+    }
+    .compare-card.dsp h3 { color: #f59e0b; }
+    .compare-card.neural h3 { color: #6366f1; }
+    .compare-card .stat { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13px; }
+    .compare-card .stat span:first-child { color: #888; }
+    .compare-card .btn-download { font-size: 13px; padding: 8px; }
+
+    .compare-notice {
+      background: #1a1a1a;
+      border: 1px solid #f59e0b33;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #f59e0b;
+      text-align: center;
+    }
+
+    .loading {
+      display: none;
+      text-align: center;
+      padding: 16px;
+      color: #888;
+    }
+    .loading.show { display: block; }
+    .spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid #333;
+      border-top: 2px solid #6366f1;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error {
+      display: none;
+      background: #2e1a1a;
+      border: 1px solid #ff444433;
+      border-radius: 10px;
+      padding: 16px;
+      margin-top: 16px;
+      color: #ff6666;
+      font-size: 14px;
+    }
+    .error.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AI Tuner</h1>
+    <p class="subtitle">上传跑调的音频，一键修音</p>
+
+    <div class="tabs">
+      <div class="tab active" data-mode="scale">音阶修音 (DSP)</div>
+      <div class="tab" data-mode="reference">参考音频 (DSP)</div>
+      <div class="tab" data-mode="compare">DSP vs AI 对比</div>
+    </div>
+
+    <!-- Scale mode panel -->
+    <div id="mode-scale" class="card">
+      <div class="card-title">音阶修音 — 传统 DSP 算法</div>
+      <div class="upload-area" id="upload-scale">
+        <div class="upload-icon">&#127925;</div>
+        <div class="upload-text">点击或拖拽上传音频 (WAV/MP3)</div>
+      </div>
+      <input type="file" id="file-scale" accept="audio/*">
+      <div class="options">
+        <div class="option">
+          <label>歌曲调性</label>
+          <select id="key-scale">
+            <option value="auto">自动检测</option>
+            <option value="C">C</option><option value="C#">C#</option>
+            <option value="D">D</option><option value="D#">D#</option>
+            <option value="E">E</option><option value="F">F</option>
+            <option value="F#">F#</option><option value="G">G</option>
+            <option value="G#">G#</option><option value="A">A</option>
+            <option value="A#">A#</option><option value="B">B</option>
+          </select>
+        </div>
+        <div class="option">
+          <label>音阶类型</label>
+          <select id="scale-select">
+            <option value="major">大调</option>
+            <option value="minor">小调</option>
+            <option value="harmonic_minor">和声小调</option>
+            <option value="pentatonic_major">五声大调</option>
+            <option value="pentatonic_minor">五声小调</option>
+            <option value="chromatic">半音阶（全修）</option>
+          </select>
+        </div>
+        <div class="option" style="grid-column: span 2;">
+          <label>修正力度: <span id="strength-scale-val">1.0</span></label>
+          <input type="range" id="strength-scale" min="0.1" max="1.0" step="0.1" value="1.0">
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btn-scale" disabled>开始修音</button>
+      <div class="result" id="result-scale">
+        <div class="stat"><span>检测调性</span><span id="res-scale-key">-</span></div>
+        <div class="stat"><span>处理帧数</span><span id="res-scale-frames">-</span></div>
+        <div class="stat"><span>修正帧数</span><span id="res-scale-corrected">-</span></div>
+        <div class="stat"><span>平均修正量</span><span id="res-scale-cents">-</span></div>
+        <a class="btn-download" id="btn-download-scale" href="#" download>下载修复后音频</a>
+      </div>
+    </div>
+
+    <!-- Reference mode panel -->
+    <div id="mode-reference" class="card" style="display:none;">
+      <div class="card-title">参考音频修音 — DTW 对齐原唱 + DSP</div>
+      <div class="upload-area" id="upload-input">
+        <div class="upload-icon">&#127908;</div>
+        <div class="upload-text">上传你唱的音频（跑调的）</div>
+      </div>
+      <input type="file" id="file-input" accept="audio/*">
+      <div class="upload-area" id="upload-ref" style="margin-top: 12px;">
+        <div class="upload-icon">&#127925;</div>
+        <div class="upload-text">上传参考音频（原唱/标准版本）</div>
+      </div>
+      <input type="file" id="file-ref" accept="audio/*">
+      <div class="options" style="margin-top: 16px;">
+        <div class="option" style="grid-column: span 2;">
+          <label>修正力度: <span id="strength-ref-val">1.0</span></label>
+          <input type="range" id="strength-ref" min="0.1" max="1.0" step="0.1" value="1.0">
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btn-ref" disabled>开始修音</button>
+      <div class="result" id="result-ref">
+        <div class="stat"><span>检测调性</span><span id="res-ref-key">-</span></div>
+        <div class="stat"><span>处理帧数</span><span id="res-ref-frames">-</span></div>
+        <div class="stat"><span>修正帧数</span><span id="res-ref-corrected">-</span></div>
+        <div class="stat"><span>平均修正量</span><span id="res-ref-cents">-</span></div>
+        <a class="btn-download" id="btn-download-ref" href="#" download>下载修复后音频</a>
+      </div>
+    </div>
+
+    <!-- Comparison mode panel -->
+    <div id="mode-compare" class="card" style="display:none;">
+      <div class="card-title">DSP vs AI 对比 — 同一段音频，两种方式同时修</div>
+      <div class="upload-area" id="upload-compare">
+        <div class="upload-icon">&#127925;</div>
+        <div class="upload-text">点击或拖拽上传跑调音频 (WAV/MP3)</div>
+      </div>
+      <input type="file" id="file-compare" accept="audio/*">
+      <div class="options" style="margin-top: 12px;">
+        <div class="option" style="grid-column: span 2;">
+          <label>修正力度: <span id="strength-compare-val">1.0</span></label>
+          <input type="range" id="strength-compare" min="0.1" max="1.0" step="0.1" value="1.0">
+        </div>
+      </div>
+      <button class="btn btn-primary" id="btn-compare" disabled>同时运行 DSP 和 AI</button>
+      <div class="loading" id="loading-compare">
+        <span class="spinner"></span>DSP 和 AI 同时处理中...
+      </div>
+      <div class="error" id="error-compare"></div>
+      <div class="compare-row" id="compare-results" style="display:none;">
+        <div class="compare-card dsp" id="card-dsp">
+          <h3>DSP 修音 (Rubber Band)</h3>
+          <div class="stat"><span>检测调性</span><span id="res-compare-dsp-key">-</span></div>
+          <div class="stat"><span>修正帧数</span><span id="res-compare-dsp-corrected">-</span></div>
+          <div class="stat"><span>平均修正量</span><span id="res-compare-dsp-cents">-</span></div>
+          <a class="btn-download" id="btn-download-dsp" href="#" download>下载 DSP 结果</a>
+        </div>
+        <div class="compare-card neural" id="card-neural">
+          <h3>AI 修音 (HiFi-GAN)</h3>
+          <div class="stat"><span>检测调性</span><span id="res-compare-neural-key">-</span></div>
+          <div class="stat"><span>修正帧数</span><span id="res-compare-neural-corrected">-</span></div>
+          <div class="stat"><span>平均修正量</span><span id="res-compare-neural-cents">-</span></div>
+          <a class="btn-download" id="btn-download-neural" href="#" download>下载 AI 结果</a>
+        </div>
+      </div>
+      <div class="compare-notice" id="notice-compare" style="display:none;"></div>
+    </div>
+
+    <div class="loading" id="loading">
+      <span class="spinner"></span>正在处理中...
+    </div>
+    <div class="error" id="error"></div>
+  </div>
+
+  <script>
+    // --- Shared state ---
+    let currentMode = 'scale';
+    const scaleFile = { file: null };
+    const refFiles = { input: null, ref: null };
+    const compareFile = { file: null };
+
+    // --- Tab switching ---
+    const panels = {
+      scale: 'mode-scale',
+      reference: 'mode-reference',
+      compare: 'mode-compare',
+    };
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        currentMode = tab.dataset.mode;
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        Object.entries(panels).forEach(([mode, id]) => {
+          document.getElementById(id).style.display = mode === currentMode ? 'block' : 'none';
+        });
+        hideAllResults();
+      });
+    });
+
+    function hideAllResults() {
+      ['result-scale', 'result-ref', 'error', 'error-compare'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('show');
+      });
+      const cr = document.getElementById('compare-results');
+      if (cr) cr.style.display = 'none';
+      const no = document.getElementById('notice-compare');
+      if (no) no.style.display = 'none';
+      const lc = document.getElementById('loading-compare');
+      if (lc) lc.classList.remove('show');
+      document.getElementById('loading').classList.remove('show');
+    }
+
+    // --- File upload helpers ---
+    function setupUpload(areaId, inputId, callback) {
+      const area = document.getElementById(areaId);
+      const input = document.getElementById(inputId);
+      area.addEventListener('click', () => input.click());
+      area.addEventListener('dragover', (e) => { e.preventDefault(); area.style.borderColor = '#6366f1'; });
+      area.addEventListener('dragleave', () => { area.style.borderColor = ''; });
+      area.addEventListener('drop', (e) => {
+        e.preventDefault();
+        area.style.borderColor = '';
+        const file = e.dataTransfer.files[0];
+        if (file) {
+          area.classList.add('has-file');
+          area.querySelector('.upload-text').textContent = file.name;
+          callback(file);
+        }
+      });
+    }
+
+    // Scale mode
+    setupUpload('upload-scale', 'file-scale', (f) => { scaleFile.file = f; document.getElementById('btn-scale').disabled = false; });
+    document.getElementById('file-scale').addEventListener('change', function() {
+      if (this.files[0]) {
+        scaleFile.file = this.files[0];
+        document.getElementById('upload-scale').classList.add('has-file');
+        document.getElementById('upload-scale').querySelector('.upload-text').textContent = this.files[0].name;
+        document.getElementById('btn-scale').disabled = false;
+      }
+    });
+
+    // Reference mode
+    setupUpload('upload-input', 'file-input', (f) => { refFiles.input = f; updateRefBtn(); });
+    document.getElementById('file-input').addEventListener('change', function() {
+      if (this.files[0]) {
+        refFiles.input = this.files[0];
+        document.getElementById('upload-input').classList.add('has-file');
+        document.getElementById('upload-input').querySelector('.upload-text').textContent = this.files[0].name;
+        updateRefBtn();
+      }
+    });
+    setupUpload('upload-ref', 'file-ref', (f) => { refFiles.ref = f; updateRefBtn(); });
+    document.getElementById('file-ref').addEventListener('change', function() {
+      if (this.files[0]) {
+        refFiles.ref = this.files[0];
+        document.getElementById('upload-ref').classList.add('has-file');
+        document.getElementById('upload-ref').querySelector('.upload-text').textContent = this.files[0].name;
+        updateRefBtn();
+      }
+    });
+
+    function updateRefBtn() {
+      document.getElementById('btn-ref').disabled = !(refFiles.input && refFiles.ref);
+    }
+
+    // Comparison mode
+    setupUpload('upload-compare', 'file-compare', (f) => { compareFile.file = f; document.getElementById('btn-compare').disabled = false; });
+    document.getElementById('file-compare').addEventListener('change', function() {
+      if (this.files[0]) {
+        compareFile.file = this.files[0];
+        document.getElementById('upload-compare').classList.add('has-file');
+        document.getElementById('upload-compare').querySelector('.upload-text').textContent = this.files[0].name;
+        document.getElementById('btn-compare').disabled = false;
+      }
+    });
+
+    // --- Strength sliders ---
+    document.getElementById('strength-scale').addEventListener('input', function() {
+      document.getElementById('strength-scale-val').textContent = this.value;
+    });
+    document.getElementById('strength-ref').addEventListener('input', function() {
+      document.getElementById('strength-ref-val').textContent = this.value;
+    });
+    document.getElementById('strength-compare').addEventListener('input', function() {
+      document.getElementById('strength-compare-val').textContent = this.value;
+    });
+
+    // --- Scale mode submit ---
+    document.getElementById('btn-scale').addEventListener('click', async () => {
+      const loading = document.getElementById('loading');
+      const result = document.getElementById('result-scale');
+      result.classList.remove('show');
+      loading.classList.add('show');
+
+      try {
+        const fd = new FormData();
+        fd.append('audio', scaleFile.file);
+        fd.append('key', document.getElementById('key-scale').value);
+        fd.append('scale', document.getElementById('scale-select').value);
+        fd.append('strength', document.getElementById('strength-scale').value);
+
+        const res = await fetch('/api/tune/scale', { method: 'POST', body: fd });
+        const json = await handleResponse(res);
+        fillResult(json, 'res-scale-key', 'res-scale-frames', 'res-scale-corrected', 'res-scale-cents', 'btn-download-scale');
+        result.classList.add('show');
+      } catch (e) {
+        showError(e.message);
+      } finally {
+        loading.classList.remove('show');
+      }
+    });
+
+    // --- Reference mode submit ---
+    document.getElementById('btn-ref').addEventListener('click', async () => {
+      const loading = document.getElementById('loading');
+      const result = document.getElementById('result-ref');
+      result.classList.remove('show');
+      document.getElementById('error').classList.remove('show');
+      loading.classList.add('show');
+
+      try {
+        const fd = new FormData();
+        fd.append('audio', refFiles.input);
+        fd.append('reference', refFiles.ref);
+        fd.append('strength', document.getElementById('strength-ref').value);
+
+        const res = await fetch('/api/tune/reference', { method: 'POST', body: fd });
+        const json = await handleResponse(res);
+        fillResult(json, 'res-ref-key', 'res-ref-frames', 'res-ref-corrected', 'res-ref-cents', 'btn-download-ref');
+        result.classList.add('show');
+      } catch (e) {
+        showError(e.message);
+      } finally {
+        loading.classList.remove('show');
+      }
+    });
+
+    // --- Comparison mode submit ---
+    document.getElementById('btn-compare').addEventListener('click', async () => {
+      const loading = document.getElementById('loading-compare');
+      const results = document.getElementById('compare-results');
+      const notice = document.getElementById('notice-compare');
+      const error = document.getElementById('error-compare');
+
+      results.style.display = 'none';
+      notice.style.display = 'none';
+      error.classList.remove('show');
+      loading.classList.add('show');
+
+      try {
+        const fd = new FormData();
+        fd.append('audio', compareFile.file);
+        fd.append('key', 'auto');
+        fd.append('scale', 'major');
+        fd.append('strength', document.getElementById('strength-compare').value);
+
+        const res = await fetch('/api/tune/compare', { method: 'POST', body: fd });
+        const json = await handleResponse(res);
+
+        // DSP result
+        if (json.dsp) {
+          fillResult(json.dsp, 'res-compare-dsp-key', null, 'res-compare-dsp-corrected', 'res-compare-dsp-cents', 'btn-download-dsp');
+          document.getElementById('card-dsp').style.display = '';
+        }
+
+        // Neural result
+        if (json.neural) {
+          fillResult(json.neural, 'res-compare-neural-key', null, 'res-compare-neural-corrected', 'res-compare-neural-cents', 'btn-download-neural');
+          document.getElementById('card-neural').style.display = '';
+        }
+
+        // Notice if neural unavailable
+        if (!json.neural_available) {
+          document.getElementById('card-neural').style.display = 'none';
+          notice.textContent = 'AI 模型未部署。请先训练模型 (python scripts/train.py)，然后将权重文件放到 models/tuner.pth。DSP 结果可供参考。';
+          notice.style.display = 'block';
+        }
+
+        results.style.display = 'grid';
+      } catch (e) {
+        error.textContent = e.message;
+        error.classList.add('show');
+      } finally {
+        loading.classList.remove('show');
+      }
+    });
+
+    // --- Helpers ---
+    async function handleResponse(res) {
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || err.error || `服务器错误 (${res.status})`);
+      }
+      return res.json();
+    }
+
+    function fillResult(json, keyId, framesId, correctedId, centsId, downloadId) {
+      if (keyId) document.getElementById(keyId).textContent = json.key_detected || '-';
+      if (framesId) document.getElementById(framesId).textContent = json.frames_processed ?? '-';
+      if (correctedId) document.getElementById(correctedId).textContent = json.frames_corrected ?? '-';
+      if (centsId) document.getElementById(centsId).textContent = (json.avg_correction_cents ?? '-') + ' cents';
+      if (downloadId) document.getElementById(downloadId).href = json.download_url || '#';
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      el.classList.add('show');
+    }
+  </script>
+</body>
+</html>

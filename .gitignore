@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Model weights (large files — store separately)
+models/*.pth
+checkpoints/*.pt
+checkpoints/logs/
+
+# Uploaded & processed audio
+uploads/*
+!uploads/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Training data
+data/training/
+data/clean/*
+!data/clean/.gitkeep
+data/out_of_tune/*
+!data/out_of_tune/.gitkeep
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
