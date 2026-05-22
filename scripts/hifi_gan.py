@@ -384,6 +384,11 @@ def feature_loss(fmap_real: list, fmap_fake: list) -> torch.Tensor:
     loss = 0.0
     for r, f in zip(fmap_real, fmap_fake):
         for rl, fl in zip(r, f):
+            # Align spatial dims: generator output may differ by a few samples
+            min_dim = min(rl.shape[-1], fl.shape[-1])
+            if rl.ndim >= 3:
+                rl = rl[..., :min_dim]
+                fl = fl[..., :min_dim]
             loss += F.l1_loss(fl, rl.detach())
     return loss
 
