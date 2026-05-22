@@ -2,149 +2,166 @@
 
 一键修音 Web 服务 — 上传跑调的音频，自动修正音准。
 
-## 两种模式
+## 三种修音模式
 
 | 模式 | 原理 | 适合场景 |
 |------|------|---------|
-| **音阶模式** | 自动检测歌曲调性，将每个音拉到最近的调内音 | 不知道原唱、没有参考音频 |
-| **参考音频模式** | DTW 对齐原唱音高，将跑调部分拉到对应目标音高 | 有原唱/标准版本，修得更准 |
+| **DSP 音阶** | 自动检测调性，将每个音拉到最近的调内音（pyrubberband） | 不知道原唱、没有参考音频 |
+| **DSP 参考音频** | DTW 对齐原唱音高，拉到对应的目标音高（pyrubberband） | 有原唱/标准版本，修得更准 |
+| **AI 神经网络** | HiFi-GAN vocoder 按目标音高重建波形，音高和共振峰一起生成 | 跑调严重也能保持音色自然 |
 
 ## 技术栈
 
-- **音高检测**: pYIN (librosa) — 提取基频 F0 和有声/无声判断
-- **音阶分析**: Krumhansl-Schmuckler 算法自动检测调性
-- **时间对齐**: DTW (Dynamic Time Warping) — 参考音频模式下对齐用户和原唱的节奏差异
-- **音高搬移**: Rubber Band Library (pyrubberband) — 共振峰保持的频域拉伸
+- **音高检测**: pYIN (librosa)
+- **调性识别**: Krumhansl-Schmuckler 算法
+- **时间对齐**: DTW (Dynamic Time Warping)
+- **DSP 音高搬移**: Rubber Band Library (pyrubberband)
+- **AI 音频重建**: HiFi-GAN vocoder with pitch conditioning（PyTorch）
 - **后端**: FastAPI (Python)
 - **前端**: 原生 HTML/CSS/JS，零依赖
-
-## 快速开始
-
-```bash
-# 安装依赖
-pip install -r backend/requirements.txt
-
-# 启动服务
-cd backend
-python app.py
-
-# 或者用 uvicorn
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-```
-
-打开 http://localhost:8000 即可使用。
 
 ## 项目结构
 
 ```
 ai-tuner/
 ├── backend/
-│   ├── app.py               # FastAPI 服务入口
-│   ├── tuner.py             # 核心修音逻辑
-│   ├── pitch_detector.py    # 音高检测 & 音阶工具
+│   ├── app.py               # FastAPI 服务入口（5 个 API）
+│   ├── tuner.py             # 3 条修音管线：DSP scale / DSP reference / neural
+│   ├── pitch_detector.py    # 音高检测 & 调性识别
 │   ├── alignment.py         # DTW 音频对齐
+│   ├── neural_vocoder.py    # HiFi-GAN 推理模型（加载 weights 用）
 │   └── requirements.txt
+├── scripts/
+│   ├── generate_training_data.py  # DSP 把干净人声搞跑调 → 构造配对训练数据
+│   ├── hifi_gan.py                # HiFi-GAN 模型定义（Generator + Discriminator + Loss）
+│   ├── train.py                   # 训练脚本（对抗训练微调）
+│   └── requirements_train.txt
 ├── frontend/
-│   └── index.html           # Web 前端界面
-├── models/                   # 预训练模型（预留）
-├── uploads/                  # 临时上传目录
-├── outputs/                  # 处理结果输出目录
-└── README.md
+│   └── index.html            # 三栏 UI（DSP 修音 / 参考音频 / DSP vs AI 对比）
+├── data/clean/               # ← 干净人声放这里
+├── data/training/            # ← generate_training_data.py 生成到这里
+├── models/                   # ← tuner.pth 训练好放这里
+├── checkpoints/              # 训练断点保存
+├── outputs/                  # 处理后音频下载
+└── uploads/                  # 用户上传临时目录
+```
+
+## 快速开始
+
+### 仅推理（使用已训练好的模型）
+
+```bash
+pip install -r backend/requirements.txt
+cd backend && uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+打开 http://localhost:8000
+
+### 完整流程（从训练到部署）
+
+```bash
+# 1. 安装训练依赖
+pip install -r scripts/requirements_train.txt
+
+# 2. 把干净人声 WAV 文件放到 data/clean/
+
+# 3. 生成配对训练数据（DSP 故意搞跑调）
+python scripts/generate_training_data.py \
+    --input_dir data/clean/ \
+    --output_dir data/training/ \
+    --pairs_per_file 50
+
+# 4. 训练模型
+python scripts/train.py \
+    --data_dir data/training/ \
+    --checkpoint_dir checkpoints/ \
+    --batch_size 8 \
+    --num_epochs 100
+
+# 5. 模型自动导出到 models/tuner.pth
+
+# 6. 启动服务
+cd backend && uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 ## API
 
 ### `POST /api/tune/scale`
-音阶模式修音。
+DSP 音阶模式修音。
 - `audio` (file): 待修正的音频
-- `key` (string, optional): 调性，默认 "auto" 自动检测
+- `key` (string, optional): 调性，默认 "auto"
 - `scale` (string, optional): 音阶类型，默认 "major"
-- `strength` (float, optional): 修正力度 0.0-1.0，默认 1.0
+- `strength` (float, optional): 修正力度 0.0-1.0
 
 ### `POST /api/tune/reference`
-参考音频模式修音。
+DSP 参考音频模式修音。
 - `audio` (file): 待修正的音频
-- `reference` (file): 参考音频（原唱/标准版）
-- `strength` (float, optional): 修正力度 0.0-1.0，默认 1.0
+- `reference` (file): 参考音频（原唱）
+- `strength` (float, optional): 修正力度 0.0-1.0
+
+### `POST /api/tune/neural`
+AI 神经网络修音（需 models/tuner.pth）。
+- `audio` (file): 待修正的音频
+- `key` (string, optional): 默认 "auto"
+- `scale` (string, optional): 默认 "major"
+- `strength` (float, optional): 修正力度 0.0-1.0
+
+### `POST /api/tune/compare`
+同时运行 DSP 和 AI，返回对比结果。
+- 参数同上
 
 ### `GET /api/download/{filename}`
 下载处理后的音频。
 
-## 效果说明
-
-| 跑调程度 | 音阶模式 | 参考音频模式 |
-|---------|---------|------------|
-| 轻微（<半音） | 好 | 好 |
-| 中等（半音~全音） | 可接受，音色轻微变形 | 好 |
-| 严重（>全音） | 差，音色失真明显 | 一般 |
-
 ## DSP vs 神经网络
 
-当前版本是纯 DSP（数字信号处理）方案，不依赖任何模型。升级到神经网络方案的优势和差异：
-
-| | DSP（当前） | 神经网络（目标） |
+| | DSP（pyrubberband） | 神经网络（HiFi-GAN） |
 |---|---|---|
-| **原理** | 检测音高 → 频域拉伸搬移 | 编码音频 → vocoder 按目标音高重建波形 |
-| **共振峰** | 搬移了音高分开了共振峰，音色会变形 | 音高和共振峰一起生成，音色自然 |
-| **跑调严重时** | 音色失真明显，修不了太远 | 能重新"唱"出来，保持自然度 |
-| **推理速度** | 毫秒级，纯 CPU | 秒级，需要 GPU 加速 |
-| **依赖** | 数学库，几十 MB | 需加载模型权重文件，几百 MB |
-| **部署** | 零模型，直接跑 | 需在服务器上本地加载 .pth 权重，不调任何外部 API |
+| **原理** | 检测音高 → 频域拉伸搬移 | 提取 mel 频谱 + 目标音高 → vocoder 重建波形 |
+| **共振峰** | 搬移音高分开了共振峰，跑调远了音色变形 | 音高和共振峰一起生成，音色自然 |
+| **跑调严重时** | 音色失真明显 | 能重新"唱"出来 |
+| **推理速度** | 毫秒级，纯 CPU | 秒级，GPU 加速 |
+| **依赖** | 数学库，几十 MB | 模型权重，~50 MB |
+| **部署** | 零模型，直接跑 | 本地加载 .pth，不调任何外部 API |
 
 ### 为什么不能调大模型 API
 
-修音需要的是**专用音频神经网络（vocoder）**，不是 LLM。LLM 的输入输出是文字，无法理解音频波形、音高、共振峰这些概念。修音用的音频模型是本地部署的，不需要云服务——但也没有现成的 API 可以调，需要自己集成到 Web 服务里。
+修音需要的是专用音频神经网络（vocoder），不是 LLM。LLM 的输入输出是文字，无法理解音频波形、音高、共振峰。修音用的音频模型是本地部署的——没有现成的 API 可以调。
+
+### 为什么神经网络能解决共振峰问题
+
+DSP 修音把人声拆成"音高"和"音色"两个独立的东西操作，但人声里两者是耦合的。神经 vocoder 不拆，直接从 mel 频谱 + 目标音高重建整个波形，音高和共鸣特征一起生成，不存在"移了 A 丢了 B"。
 
 ### 工程化难点
 
-从 DSP 切到神经 vocoder 方案的主要难点不在模型设计，在工程落地：
+- **配对训练数据缺失**：现实中不存在同一人"跑调版"和"正确版"的配对数据。取巧方案是用 DSP 把干净人声故意搞跑调，反向构造训练数据。
+- **实时性**：neural vocoder 比 Rubber Band 慢 1-2 个数量级，单次推理数秒，不适合实时修音流。
+- **可控性**：神经网络是黑盒，可能把刻意的滑音当成跑调修掉。DSP 每一步可解释可调试。
+- **并发**：多用户同时推理对 GPU 显存压力大。
 
-- **配对训练数据缺失**：理想情况需要同一个人"跑调版"和"不跑调版"的配对数据来训练，现实中几乎不存在。取巧方案是用 DSP 故意把人声"搞跑调"，构造反向训练数据。
-- **实时性**：neural vocoder 推理比 Rubber Band 慢 1-2 个数量级，单次处理一首 3 分钟的歌需要数秒到数十秒，不能做实时修音流。
-- **可控性**：神经网络是黑盒，可能"自由发挥"改了你不想改的东西——比如把刻意设计的滑音当成跑调修掉。DSP 每一步都可解释、可调试。
-- **泛化**：不同录音环境、麦克风、采样率、人声音色，模型能不能稳定处理都是未知数。
-- **并发**：Web 服务场景下多个用户同时上传，每路请求都要跑一次神经网络推理，对服务器算力和内存压力远大于 DSP。
+## 训练方案
 
-## TODO / 后续计划
+**基于 RVC 架构改造**（已落地为 scripts/train.py）：
 
-### 阶段一：神经 vocoder 替代 DSP（核心升级）
+RVC 有三个模块：内容编码器（"在唱什么"）+ 音高编码器（"唱了多高"）+ HiFi-GAN 解码器（合并重建波形）。修音只需改动一处——把音高编码器提取的跑调音高替换成修正后的目标音高，内容和音色不变。
 
-**目标**：用 HiFi-GAN / BigVGAN 替代 Rubber Band，让音高和共振峰一起生成，从根本上解决"跑调远了音色失真"的 DSP 硬伤。
-
-**方案**：基于 RVC（Retrieval-based Voice Conversion）架构改造：
-- RVC 本身有三个模块：内容编码器（"在唱什么"）+ 音高编码器（"唱了多高"）+ HiFi-GAN 解码器（合并重建波形）
-- 修音只需改动一处：提取音高 → 修正音高 → 用修正后的音高 + 原始内容 → 解码器重建
-- 不需要换声，只需要换音高，比 RVC 原任务更简单
-
-**训练数据**：用 DSP 故意把干净人声"搞跑调"，构造无限量配对数据（跑调版 → 原始版）
+**训练数据**：`generate_training_data.py` 用 DSP 随机分段跑调来制造配对数据。任何干净的人声都能用来生成无限量训练对。
 
 **算力需求**：
+
 | 环节 | 最低配置 | 推荐配置 |
 |------|---------|---------|
 | 微调 HiFi-GAN | RTX 3060 (12GB) | RTX 4090 (24GB) |
-| 微调完整 RVC 管线 | RTX 4090 (24GB) | A100 / 云端多卡 |
-| 仅推理（部署） | CPU 也行，较慢 | GTX 1060+ 即可 |
+| 仅推理（部署） | CPU 也行 | GTX 1060+ |
 
-**训练周期**：微调 1-3 天（家用显卡）
+**训练周期**：家用显卡 1-3 天。
 
-**开源模型基础**：
-| 模型 | 用途 | 许可 |
-|------|------|------|
-| HiFi-GAN | mel 频谱 → 高质量波形 | MIT |
-| BigVGAN | 比 HiFi-GAN 音质更好（NVIDIA） | MIT |
-| RVC | 歌声转换，含独立音高编码器，可控 | MIT |
-| DDSP | 神经网络 + 传统 DSP 混合，音高/音色解耦 | Apache 2.0 |
+## TODO
 
-### 阶段二：工程化
-
-- [ ] 人声/伴奏分离预处理（demucs），支持直接上传带伴奏的音频
-- [ ] GPU 推理优化（TensorRT / ONNX），降低单次推理延迟
+- [ ] 人声/伴奏分离预处理（demucs），直接上传带伴奏的音频
+- [ ] GPU 推理优化（TensorRT / ONNX）
 - [ ] 请求队列管理，避免并发推理撑爆显存
-- [ ] 支持流式处理（WebSocket），边录边修
-
-### 阶段三：体验完善
-
+- [ ] 流式处理（WebSocket），边录边修
 - [ ] 自动混音（加混响、EQ 等后期处理）
-- [ ] 批量处理
 - [ ] 前端波形对比（修前 vs 修后可视化）
 - [ ] 移动端适配
