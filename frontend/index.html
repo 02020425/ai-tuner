@@ -274,6 +274,23 @@
           <label>修正力度: <span id="strength-scale-val">1.0</span></label>
           <input type="range" id="strength-scale" min="0.1" max="1.0" step="0.1" value="1.0">
         </div>
+        <div class="option">
+          <label>节奏修正</label>
+          <select id="rhythm-scale">
+            <option value="none">不修正</option>
+            <option value="grid">节拍网格对齐</option>
+            <option value="reference">参考音频</option>
+          </select>
+        </div>
+        <div class="option" id="rhythm-bpm-opt" style="display:none;">
+          <label>BPM (留空自动检测)</label>
+          <input type="number" id="rhythm-bpm-scale" placeholder="自动" min="40" max="300" step="1">
+        </div>
+        <div class="upload-area" id="upload-rhythm-ref-scale" style="display:none; margin-top: 8px; grid-column: span 2;">
+          <div class="upload-icon">🎵</div>
+          <div class="upload-text">上传节奏参考音频</div>
+        </div>
+        <input type="file" id="file-rhythm-ref-scale" accept="audio/*">
       </div>
       <button class="btn btn-primary" id="btn-scale" disabled>开始修音</button>
       <div class="result" id="result-scale">
@@ -303,6 +320,12 @@
           <label>修正力度: <span id="strength-ref-val">1.0</span></label>
           <input type="range" id="strength-ref" min="0.1" max="1.0" step="0.1" value="1.0">
         </div>
+        <div class="option" style="grid-column: span 2;">
+          <label>
+            <input type="checkbox" id="rhythm-ref-check" style="width: auto; margin-right: 6px;">
+            同时对齐节奏（DTW 用参考音频同步演唱时机）
+          </label>
+        </div>
       </div>
       <button class="btn btn-primary" id="btn-ref" disabled>开始修音</button>
       <div class="result" id="result-ref">
@@ -326,6 +349,18 @@
         <div class="option" style="grid-column: span 2;">
           <label>修正力度: <span id="strength-compare-val">1.0</span></label>
           <input type="range" id="strength-compare" min="0.1" max="1.0" step="0.1" value="1.0">
+        </div>
+        <div class="option">
+          <label>节奏修正</label>
+          <select id="rhythm-compare">
+            <option value="none">不修正</option>
+            <option value="grid">节拍网格对齐</option>
+            <option value="reference">参考音频</option>
+          </select>
+        </div>
+        <div class="option" id="rhythm-bpm-compare-opt" style="display:none;">
+          <label>BPM (留空自动检测)</label>
+          <input type="number" id="rhythm-bpm-compare" placeholder="自动" min="40" max="300" step="1">
         </div>
       </div>
       <button class="btn btn-primary" id="btn-compare" disabled>同时运行 DSP 和 AI</button>
@@ -361,7 +396,7 @@
   <script>
     // --- Shared state ---
     let currentMode = 'scale';
-    const scaleFile = { file: null };
+    const scaleFile = { file: null, rhythmRef: null };
     const refFiles = { input: null, ref: null };
     const compareFile = { file: null };
 
@@ -427,6 +462,22 @@
       }
     });
 
+    // Scale mode rhythm
+    document.getElementById('rhythm-scale').addEventListener('change', function() {
+      const isGrid = this.value === 'grid';
+      const isRef = this.value === 'reference';
+      document.getElementById('rhythm-bpm-opt').style.display = isGrid ? 'block' : 'none';
+      document.getElementById('upload-rhythm-ref-scale').style.display = isRef ? 'block' : 'none';
+    });
+    setupUpload('upload-rhythm-ref-scale', 'file-rhythm-ref-scale', (f) => { scaleFile.rhythmRef = f; });
+    document.getElementById('file-rhythm-ref-scale').addEventListener('change', function() {
+      if (this.files[0]) {
+        scaleFile.rhythmRef = this.files[0];
+        document.getElementById('upload-rhythm-ref-scale').classList.add('has-file');
+        document.getElementById('upload-rhythm-ref-scale').querySelector('.upload-text').textContent = this.files[0].name;
+      }
+    });
+
     // Reference mode
     setupUpload('upload-input', 'file-input', (f) => { refFiles.input = f; updateRefBtn(); });
     document.getElementById('file-input').addEventListener('change', function() {
@@ -461,6 +512,9 @@
         document.getElementById('btn-compare').disabled = false;
       }
     });
+    document.getElementById('rhythm-compare').addEventListener('change', function() {
+      document.getElementById('rhythm-bpm-compare-opt').style.display = this.value === 'grid' ? 'block' : 'none';
+    });
 
     // --- Strength sliders ---
     document.getElementById('strength-scale').addEventListener('input', function() {
@@ -486,6 +540,12 @@
         fd.append('key', document.getElementById('key-scale').value);
         fd.append('scale', document.getElementById('scale-select').value);
         fd.append('strength', document.getElementById('strength-scale').value);
+        fd.append('rhythm', document.getElementById('rhythm-scale').value);
+        const rhythmBpm = document.getElementById('rhythm-bpm-scale').value;
+        if (rhythmBpm) fd.append('rhythm_bpm', parseFloat(rhythmBpm));
+        if (document.getElementById('rhythm-scale').value === 'reference' && scaleFile.rhythmRef) {
+          fd.append('rhythm_ref', scaleFile.rhythmRef);
+        }
 
         const res = await fetch('/api/tune/scale', { method: 'POST', body: fd });
         const json = await handleResponse(res);
@@ -511,6 +571,7 @@
         fd.append('audio', refFiles.input);
         fd.append('reference', refFiles.ref);
         fd.append('strength', document.getElementById('strength-ref').value);
+        fd.append('rhythm', document.getElementById('rhythm-ref-check').checked ? 'reference' : 'none');
 
         const res = await fetch('/api/tune/reference', { method: 'POST', body: fd });
         const json = await handleResponse(res);
@@ -541,6 +602,9 @@
         fd.append('key', 'auto');
         fd.append('scale', 'major');
         fd.append('strength', document.getElementById('strength-compare').value);
+        fd.append('rhythm', document.getElementById('rhythm-compare').value);
+        const rhythmBpmCmp = document.getElementById('rhythm-bpm-compare').value;
+        if (rhythmBpmCmp) fd.append('rhythm_bpm', parseFloat(rhythmBpmCmp));
 
         const res = await fetch('/api/tune/compare', { method: 'POST', body: fd });
         const json = await handleResponse(res);

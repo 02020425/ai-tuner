@@ -8,6 +8,7 @@ from pathlib import Path
 # Ensure backend/ is on the Python path for imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from typing import Optional
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +37,7 @@ SCALE_OPTIONS = [
     "pentatonic_major", "pentatonic_minor", "chromatic",
 ]
 KEY_OPTIONS = ["auto", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+RHYTHM_OPTIONS = ["none", "grid", "reference"]
 
 
 @app.get("/api/scales")
@@ -48,25 +50,43 @@ def list_keys():
     return KEY_OPTIONS
 
 
+@app.get("/api/rhythms")
+def list_rhythms():
+    return RHYTHM_OPTIONS
+
+
 @app.post("/api/tune/scale")
 def tune_by_scale(
     audio: UploadFile = File(...),
     key: str = Form("auto"),
     scale: str = Form("major"),
     strength: float = Form(1.0),
+    rhythm: str = Form("none"),
+    rhythm_ref: Optional[UploadFile] = File(None),
+    rhythm_bpm: Optional[float] = Form(None),
 ):
     """Pitch correction using musical scale."""
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
     output_path = OUTPUT_DIR / f"{uuid.uuid4()}.wav"
+    rhythm_ref_path = None
 
     try:
         input_path.write_bytes(audio.file.read())
+
+        # Save rhythm reference if provided
+        if rhythm == "reference" and rhythm_ref is not None:
+            rhythm_ref_path = UPLOAD_DIR / f"{uuid.uuid4()}_rhythm_ref.wav"
+            rhythm_ref_path.write_bytes(rhythm_ref.file.read())
+            rhythm_ref_path = str(rhythm_ref_path)
 
         result = tune_to_scale(
             str(input_path),
             key=key,
             scale_type=scale,
             correction_strength=strength,
+            rhythm_mode=rhythm,
+            rhythm_ref_path=rhythm_ref_path,
+            rhythm_bpm=rhythm_bpm,
         )
 
         import soundfile as sf
@@ -83,6 +103,8 @@ def tune_by_scale(
     finally:
         if input_path.exists():
             input_path.unlink()
+        if rhythm_ref_path and Path(rhythm_ref_path).exists():
+            Path(rhythm_ref_path).unlink()
 
 
 @app.post("/api/tune/neural")
@@ -91,19 +113,31 @@ def tune_by_neural(
     key: str = Form("auto"),
     scale: str = Form("major"),
     strength: float = Form(1.0),
+    rhythm: str = Form("none"),
+    rhythm_ref: Optional[UploadFile] = File(None),
+    rhythm_bpm: Optional[float] = Form(None),
 ):
     """Pitch correction using neural vocoder (requires trained model)."""
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
     output_path = OUTPUT_DIR / f"{uuid.uuid4()}.wav"
+    rhythm_ref_path = None
 
     try:
         input_path.write_bytes(audio.file.read())
+
+        if rhythm == "reference" and rhythm_ref is not None:
+            rhythm_ref_path = UPLOAD_DIR / f"{uuid.uuid4()}_rhythm_ref.wav"
+            rhythm_ref_path.write_bytes(rhythm_ref.file.read())
+            rhythm_ref_path = str(rhythm_ref_path)
 
         result = tune_neural(
             str(input_path),
             key=key,
             scale_type=scale,
             correction_strength=strength,
+            rhythm_mode=rhythm,
+            rhythm_ref_path=rhythm_ref_path,
+            rhythm_bpm=rhythm_bpm,
         )
 
         import soundfile as sf
@@ -122,6 +156,8 @@ def tune_by_neural(
     finally:
         if input_path.exists():
             input_path.unlink()
+        if rhythm_ref_path and Path(rhythm_ref_path).exists():
+            Path(rhythm_ref_path).unlink()
 
 
 @app.post("/api/tune/compare")
@@ -130,18 +166,30 @@ def tune_comparison(
     key: str = Form("auto"),
     scale: str = Form("major"),
     strength: float = Form(1.0),
+    rhythm: str = Form("none"),
+    rhythm_ref: Optional[UploadFile] = File(None),
+    rhythm_bpm: Optional[float] = Form(None),
 ):
     """Run both DSP and neural correction, return both results for comparison."""
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
+    rhythm_ref_path = None
 
     try:
         input_path.write_bytes(audio.file.read())
+
+        if rhythm == "reference" and rhythm_ref is not None:
+            rhythm_ref_path = UPLOAD_DIR / f"{uuid.uuid4()}_rhythm_ref.wav"
+            rhythm_ref_path.write_bytes(rhythm_ref.file.read())
+            rhythm_ref_path = str(rhythm_ref_path)
 
         results = tune_compare(
             str(input_path),
             key=key,
             scale_type=scale,
             correction_strength=strength,
+            rhythm_mode=rhythm,
+            rhythm_ref_path=rhythm_ref_path,
+            rhythm_bpm=rhythm_bpm,
         )
 
         out = {"neural_available": results["neural_available"]}
@@ -183,6 +231,7 @@ def tune_by_ref(
     audio: UploadFile = File(...),
     reference: UploadFile = File(...),
     strength: float = Form(1.0),
+    rhythm: str = Form("none"),
 ):
     """Pitch correction using a reference (original singer) audio."""
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
@@ -197,6 +246,7 @@ def tune_by_ref(
             str(input_path),
             str(ref_path),
             correction_strength=strength,
+            rhythm_mode=rhythm,
         )
 
         import soundfile as sf

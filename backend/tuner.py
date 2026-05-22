@@ -28,6 +28,95 @@ from pitch_detector import (
     SCALES,
 )
 from alignment import dtw_align
+from rhythm_corrector import correct_to_reference as rhythm_to_ref, correct_to_grid as rhythm_to_grid
+from scipy.ndimage import median_filter
+
+
+# ---------------------------------------------------------------------------
+# Rhythm correction pre-processing
+# ---------------------------------------------------------------------------
+
+def _apply_rhythm_correction(
+    y: np.ndarray,
+    sr: int,
+    rhythm_mode: str,
+    y_ref: np.ndarray | None = None,
+    sr_ref: int | None = None,
+    bpm: float | None = None,
+) -> np.ndarray:
+    """Apply rhythm correction before pitch correction.
+
+    Args:
+        y: audio waveform
+        sr: sample rate
+        rhythm_mode: "none", "grid", or "reference"
+        y_ref: reference audio (required for "reference" mode)
+        sr_ref: reference sample rate (required for "reference" mode)
+        bpm: target BPM (optional for "grid" mode, auto-detected if None)
+
+    Returns:
+        time-corrected waveform
+    """
+    if rhythm_mode == "none":
+        return y
+    elif rhythm_mode == "reference":
+        if y_ref is None:
+            return y
+        return rhythm_to_ref(y, sr, y_ref, sr_ref)
+    elif rhythm_mode == "grid":
+        return rhythm_to_grid(y, sr, bpm=bpm)
+    else:
+        return y
+
+
+# ---------------------------------------------------------------------------
+# Post-processing helpers
+# ---------------------------------------------------------------------------
+
+def _smooth_pitch_contour(f0: np.ndarray, kernel: int = 5) -> np.ndarray:
+    """Apply median filter to remove isolated pitch jumps and vibrato overshoot.
+
+    Only touches non-zero frames (F0 > 0 Hz or non-zero cents correction);
+    zero/unvoiced frames pass through untouched.
+    """
+    active = np.abs(f0) > 0.1
+    if not active.any():
+        return f0
+    smoothed = median_filter(f0, size=kernel, mode="nearest")
+    smoothed[~active] = f0[~active]
+    return smoothed
+
+
+def _normalize_loudness(y: np.ndarray, sr: int, target_db: float = -18.0) -> np.ndarray:
+    """RMS-based loudness normalization.
+
+    Brings average loudness to target_db (LUFS-approximate), applying a
+    soft limiter to prevent clipping. Preserves relative dynamics within
+    the audio — this is leveling, not compression.
+
+    Args:
+        y: audio waveform
+        sr: sample rate
+        target_db: target RMS level in dBFS (default -18, standard for vocals)
+
+    Returns:
+        loudness-normalized audio
+    """
+    # Perceptual weighting: A-weighting approximates how ears hear loudness
+    rms = np.sqrt(np.mean(y ** 2))
+    if rms < 1e-10:
+        return y
+
+    current_db = 20 * np.log10(rms + 1e-10)
+    gain_db = target_db - current_db
+    gain_linear = 10 ** (gain_db / 20.0)
+
+    # Soft limit: don't push peaks beyond -1 dBFS
+    peak = np.max(np.abs(y)) * gain_linear
+    if peak > 0.85:
+        gain_linear = 0.85 / (np.max(np.abs(y)) + 1e-10)
+
+    return y * gain_linear
 
 
 @dataclass
@@ -53,6 +142,9 @@ def tune_to_scale(
     key: str = "auto",
     scale_type: str = "major",
     correction_strength: float = 1.0,
+    rhythm_mode: str = "none",
+    rhythm_ref_path: str | None = None,
+    rhythm_bpm: float | None = None,
 ) -> TuneResult:
     """Correct pitch by snapping to a musical scale.
 
@@ -61,6 +153,9 @@ def tune_to_scale(
         key: "auto" to detect, or e.g. "C", "C#", "D", ...
         scale_type: one of the keys in SCALES dict
         correction_strength: 0.0 = no correction, 1.0 = full snap to scale
+        rhythm_mode: "none", "grid", or "reference"
+        rhythm_ref_path: path to reference audio for rhythm alignment
+        rhythm_bpm: target BPM for grid quantization (auto-detected if None)
 
     Returns:
         TuneResult with corrected audio and metadata.
@@ -68,6 +163,16 @@ def tune_to_scale(
     y, sr = sf.read(file_path)
     if y.ndim > 1:
         y = y.mean(axis=1)  # Convert stereo to mono
+
+    # Rhythm correction pre-processing
+    if rhythm_mode != "none":
+        y_ref = None
+        sr_ref = None
+        if rhythm_mode == "reference" and rhythm_ref_path:
+            y_ref, sr_ref = sf.read(rhythm_ref_path)
+            if y_ref.ndim > 1:
+                y_ref = y_ref.mean(axis=1)
+        y = _apply_rhythm_correction(y, sr, rhythm_mode, y_ref, sr_ref, rhythm_bpm)
 
     hop_length = 256
 
@@ -92,12 +197,20 @@ def tune_to_scale(
         if voiced_flag[i] and np.isfinite(f0[i]):
             target_freq = snap_to_scale(f0[i], tonic_hz, scale_type)
             f0_corrected[i] = target_freq
-            shift = hz_to_cents(target_freq, f0[i]) * correction_strength
-            pitch_shifts_cents[i] = shift
+
+    # Smooth target pitch to remove isolated jump corrections (vibrato overshoot)
+    f0_corrected = _smooth_pitch_contour(f0_corrected, kernel=5)
+
+    # Compute per-frame pitch shifts from smoothed targets
+    for i in range(len(f0)):
+        if voiced_flag[i] and np.isfinite(f0[i]) and f0_corrected[i] > 0:
+            pitch_shifts_cents[i] = hz_to_cents(f0_corrected[i], f0[i]) * correction_strength
 
     # Apply pitch shifting with rubberband
-    shift_map = [(t * hop_length / sr, shift) for t, shift in enumerate(pitch_shifts_cents)]
     y_corrected = pyrb.pitch_shift(y, sr, pitch_shifts_cents / 100.0, hop_length=hop_length)
+
+    # Loudness normalization
+    y_corrected = _normalize_loudness(y_corrected, sr)
 
     frames_corrected = int((np.abs(pitch_shifts_cents) > 5.0).sum())
 
@@ -116,10 +229,12 @@ def tune_to_reference(
     file_path: str,
     reference_path: str,
     correction_strength: float = 1.0,
+    rhythm_mode: str = "none",
 ) -> TuneResult:
     """Correct pitch by aligning to a reference (original singer) audio.
 
     Steps:
+      0. (optional) Rhythm correction to reference timing
       1. Extract pitch from both input and reference
       2. DTW-align the reference pitch to input timing
       3. Snap input pitch to aligned reference pitch
@@ -128,6 +243,7 @@ def tune_to_reference(
         file_path: path to the out-of-tune input audio
         reference_path: path to the reference (correct) audio
         correction_strength: 0.0 = no correction, 1.0 = full snap to reference
+        rhythm_mode: "none" or "reference" (uses reference_path for rhythm alignment)
 
     Returns:
         TuneResult with corrected audio and metadata.
@@ -139,6 +255,10 @@ def tune_to_reference(
     y_ref, sr_ref = sf.read(reference_path)
     if y_ref.ndim > 1:
         y_ref = y_ref.mean(axis=1)
+
+    # Rhythm correction pre-processing
+    if rhythm_mode == "reference":
+        y = _apply_rhythm_correction(y, sr, "reference", y_ref, sr_ref)
 
     # Resample reference to match input sample rate
     if sr_ref != sr:
@@ -169,10 +289,15 @@ def tune_to_reference(
     pitch_shifts_cents = np.zeros(len(f0_input))
     for i in range(len(f0_input)):
         if voiced_input[i] and np.isfinite(f0_input[i]) and np.isfinite(aligned_ref_pitch[i]):
-            cents = hz_to_cents(aligned_ref_pitch[i], f0_input[i])
-            pitch_shifts_cents[i] = cents * correction_strength
+            pitch_shifts_cents[i] = hz_to_cents(aligned_ref_pitch[i], f0_input[i]) * correction_strength
+
+    # Smooth pitch shifts to avoid isolated corrections
+    pitch_shifts_cents = _smooth_pitch_contour(pitch_shifts_cents, kernel=5)
 
     y_corrected = pyrb.pitch_shift(y, sr, pitch_shifts_cents / 100.0, hop_length=hop_length)
+
+    # Loudness normalization
+    y_corrected = _normalize_loudness(y_corrected, sr)
 
     frames_corrected = int((np.abs(pitch_shifts_cents) > 5.0).sum())
 
@@ -250,6 +375,9 @@ def tune_neural(
     key: str = "auto",
     scale_type: str = "major",
     correction_strength: float = 1.0,
+    rhythm_mode: str = "none",
+    rhythm_ref_path: str | None = None,
+    rhythm_bpm: float | None = None,
 ) -> TuneResult:
     """Neural pitch correction using a trained HiFi-GAN vocoder.
 
@@ -279,6 +407,16 @@ def tune_neural(
     if y.ndim > 1:
         y = y.mean(axis=1)
 
+    # Rhythm correction pre-processing
+    if rhythm_mode != "none":
+        y_ref = None
+        sr_ref = None
+        if rhythm_mode == "reference" and rhythm_ref_path:
+            y_ref, sr_ref = sf.read(rhythm_ref_path)
+            if y_ref.ndim > 1:
+                y_ref = y_ref.mean(axis=1)
+        y = _apply_rhythm_correction(y, sr, rhythm_mode, y_ref, sr_ref, rhythm_bpm)
+
     target_sr = 22050  # Model was trained at this rate
     if sr != target_sr:
         import librosa
@@ -305,9 +443,15 @@ def tune_neural(
         if voiced_flag[i] and np.isfinite(f0[i]):
             corrected = snap_to_scale(f0[i], tonic_hz, scale_type)
             target_pitch[i] = corrected
-            pitch_shifts_cents[i] = hz_to_cents(corrected, f0[i]) * correction_strength
         else:
             target_pitch[i] = 0.0
+
+    # Smooth target pitch contour to avoid abrupt corrections
+    target_pitch = _smooth_pitch_contour(target_pitch, kernel=5)
+
+    for i in range(len(f0)):
+        if voiced_flag[i] and np.isfinite(f0[i]) and target_pitch[i] > 0:
+            pitch_shifts_cents[i] = hz_to_cents(target_pitch[i], f0[i]) * correction_strength
 
     # ---- Neural vocoder inference ----
     y_tensor = torch.from_numpy(y).float().unsqueeze(0).to(device)
@@ -335,6 +479,9 @@ def tune_neural(
     if len(y_corrected) > expected_len:
         y_corrected = y_corrected[:expected_len]
 
+    # Loudness normalization
+    y_corrected = _normalize_loudness(y_corrected, sr)
+
     frames_corrected = int((np.abs(pitch_shifts_cents) > 5.0).sum())
 
     return TuneResult(
@@ -354,15 +501,21 @@ def tune_compare(
     key: str = "auto",
     scale_type: str = "major",
     correction_strength: float = 1.0,
+    rhythm_mode: str = "none",
+    rhythm_ref_path: str | None = None,
+    rhythm_bpm: float | None = None,
 ) -> dict:
     """Run both DSP and neural correction on the same audio, return both results.
 
     This is the comparison endpoint — used to demonstrate the quality
     difference between DSP and AI-based correction side by side.
     """
-    result_dsp = tune_to_scale(file_path, key, scale_type, correction_strength)
+    result_dsp = tune_to_scale(file_path, key, scale_type, correction_strength,
+                                rhythm_mode, rhythm_ref_path, rhythm_bpm)
     try:
-        result_neural = tune_neural(file_path, model_path, key, scale_type, correction_strength)
+        result_neural = tune_neural(file_path, model_path, key, scale_type,
+                                    correction_strength, rhythm_mode,
+                                    rhythm_ref_path, rhythm_bpm)
         neural_available = True
     except (FileNotFoundError, ImportError):
         result_neural = None
