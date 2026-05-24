@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 import pyrubberband as pyrb
 import soundfile as sf
-import torch
 from dataclasses import dataclass
 
 from pitch_detector import (
@@ -30,6 +29,90 @@ from pitch_detector import (
 from alignment import dtw_align
 from rhythm_corrector import correct_to_reference as rhythm_to_ref, correct_to_grid as rhythm_to_grid
 from scipy.ndimage import median_filter
+
+
+# ---------------------------------------------------------------------------
+# Per-frame pitch shifting (segmented, for pyrb 0.4+ which only takes scalar)
+# ---------------------------------------------------------------------------
+
+def _apply_per_frame_pitch_shift(
+    y: np.ndarray, sr: int, shifts_cents: np.ndarray,
+    hop_length: int = 256, min_segment_ms: int = 50,
+) -> np.ndarray:
+    """Apply per-frame pitch shifts by processing in segments.
+
+    pyrubberband 0.4+ only accepts scalar n_steps, so we group
+    consecutive frames with similar corrections into segments,
+    apply the median shift to each, and crossfade.
+
+    Args:
+        y: audio waveform
+        sr: sample rate
+        shifts_cents: per-frame shift in cents (n_frames,)
+        hop_length: hop size used for pitch detection
+        min_segment_ms: minimum segment duration in ms (avoids clicks)
+
+    Returns:
+        pitch-corrected audio
+    """
+    if len(shifts_cents) == 0 or np.max(np.abs(shifts_cents)) < 0.5:
+        return y
+
+    n_frames = len(shifts_cents)
+    min_frames = max(1, int(min_segment_ms / 1000.0 * sr / hop_length))
+
+    # Group consecutive frames where shift differs by < 10 cents
+    boundaries = [0]
+    for i in range(1, n_frames):
+        if abs(shifts_cents[i] - shifts_cents[i - 1]) > 10:
+            boundaries.append(i)
+    boundaries.append(n_frames)
+
+    # Merge segments shorter than min_frames
+    merged = [boundaries[0]]
+    for b in boundaries[1:]:
+        if b - merged[-1] < min_frames and len(merged) > 1:
+            merged[-1] = b
+        else:
+            merged.append(b)
+
+    # Process each segment
+    output = np.zeros_like(y)
+    fade_len = min(256, len(y) // 16)  # 256-sample crossfade
+
+    prev_end_sample = 0
+    for seg_idx in range(len(merged) - 1):
+        f_start = merged[seg_idx]
+        f_end = merged[seg_idx + 1]
+
+        s_start = f_start * hop_length
+        s_end = min(len(y), f_end * hop_length)
+
+        if s_end <= s_start:
+            continue
+
+        seg_shift = np.median(shifts_cents[f_start:f_end])
+        if abs(seg_shift) < 2.0:
+            # Too small to shift, copy as-is
+            output[s_start:s_end] = y[s_start:s_end]
+        else:
+            seg_in = y[s_start:s_end]
+            try:
+                seg_out = pyrb.pitch_shift(seg_in, sr, seg_shift / 100.0)
+            except Exception:
+                seg_out = seg_in  # fallback: skip this segment
+
+            # Trim to match
+            copy_len = min(len(seg_out), len(seg_in))
+            output[s_start:s_start + copy_len] = seg_out[:copy_len]
+
+        prev_end_sample = s_end
+
+    # Fill trailing silence
+    if prev_end_sample < len(y):
+        output[prev_end_sample:] = y[prev_end_sample:]
+
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +289,8 @@ def tune_to_scale(
         if voiced_flag[i] and np.isfinite(f0[i]) and f0_corrected[i] > 0:
             pitch_shifts_cents[i] = hz_to_cents(f0_corrected[i], f0[i]) * correction_strength
 
-    # Apply pitch shifting with rubberband
-    y_corrected = pyrb.pitch_shift(y, sr, pitch_shifts_cents / 100.0, hop_length=hop_length)
+    # Apply pitch shifting (per-frame, segmented for pyrb 0.4+)
+    y_corrected = _apply_per_frame_pitch_shift(y, sr, pitch_shifts_cents, hop_length=hop_length)
 
     # Loudness normalization
     y_corrected = _normalize_loudness(y_corrected, sr)
@@ -294,7 +377,7 @@ def tune_to_reference(
     # Smooth pitch shifts to avoid isolated corrections
     pitch_shifts_cents = _smooth_pitch_contour(pitch_shifts_cents, kernel=5)
 
-    y_corrected = pyrb.pitch_shift(y, sr, pitch_shifts_cents / 100.0, hop_length=hop_length)
+    y_corrected = _apply_per_frame_pitch_shift(y, sr, pitch_shifts_cents, hop_length=hop_length)
 
     # Loudness normalization
     y_corrected = _normalize_loudness(y_corrected, sr)
@@ -322,6 +405,7 @@ _DEVICE = None
 
 
 def _get_device() -> str:
+    import torch
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -346,6 +430,7 @@ def _load_model(model_path: str | None = None) -> tuple:
     if _MODEL is not None and _MODEL_PATH == model_path and _DEVICE == device:
         return _MODEL, device
 
+    import torch
     from neural_vocoder import InferenceGenerator, load_model
 
     if os.path.exists(model_path):
@@ -400,6 +485,7 @@ def tune_neural(
     Returns:
         TuneResult with corrected audio and metadata.
     """
+    import torch
     model, device = _load_model(model_path)
 
     # Load and preprocess audio

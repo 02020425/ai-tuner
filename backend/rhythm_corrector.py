@@ -138,7 +138,7 @@ def correct_to_reference(y: np.ndarray, sr: int,
 
     # Apply time-stretch using rubberband (small shifts, good quality)
     import pyrubberband as pyrb
-    y_corrected = pyrb.time_stretch(y, sr, 1.0 / ratios, hop_length=hop_length)
+    y_corrected = pyrb.time_stretch(y, sr, 1.0 / ratios)
 
     return y_corrected
 
@@ -208,7 +208,7 @@ def correct_to_grid(y: np.ndarray, sr: int, bpm: float | None = None,
         import pyrubberband as pyrb
         # Convert frame shifts to stretch ratio (1.0 = no change)
         stretch_ratio = 1.0 + frame_shifts
-        y_corrected = pyrb.time_stretch(y, sr, stretch_ratio, hop_length=hop_length)
+        y_corrected = pyrb.time_stretch(y, sr,stretch_ratio)
         # Trim/pad to original length
         if len(y_corrected) > len(y):
             y_corrected = y_corrected[:len(y)]

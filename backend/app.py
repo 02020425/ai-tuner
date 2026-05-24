@@ -66,14 +66,15 @@ def tune_by_scale(
     rhythm_bpm: Optional[float] = Form(None),
 ):
     """Pitch correction using musical scale."""
+    stem = Path(audio.filename).stem if audio.filename else "audio"
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
-    output_path = OUTPUT_DIR / f"{uuid.uuid4()}.wav"
+    out_name = f"{stem}_tuned_dsp_scale.wav"
+    output_path = OUTPUT_DIR / out_name
     rhythm_ref_path = None
 
     try:
         input_path.write_bytes(audio.file.read())
 
-        # Save rhythm reference if provided
         if rhythm == "reference" and rhythm_ref is not None:
             rhythm_ref_path = UPLOAD_DIR / f"{uuid.uuid4()}_rhythm_ref.wav"
             rhythm_ref_path.write_bytes(rhythm_ref.file.read())
@@ -118,8 +119,10 @@ def tune_by_neural(
     rhythm_bpm: Optional[float] = Form(None),
 ):
     """Pitch correction using neural vocoder (requires trained model)."""
+    stem = Path(audio.filename).stem if audio.filename else "audio"
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
-    output_path = OUTPUT_DIR / f"{uuid.uuid4()}.wav"
+    out_name = f"{stem}_tuned_neural.wav"
+    output_path = OUTPUT_DIR / out_name
     rhythm_ref_path = None
 
     try:
@@ -171,6 +174,7 @@ def tune_comparison(
     rhythm_bpm: Optional[float] = Form(None),
 ):
     """Run both DSP and neural correction, return both results for comparison."""
+    stem = Path(audio.filename).stem if audio.filename else "audio"
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
     rhythm_ref_path = None
 
@@ -195,7 +199,7 @@ def tune_comparison(
         out = {"neural_available": results["neural_available"]}
 
         # Save DSP result
-        dsp_path = OUTPUT_DIR / f"{uuid.uuid4()}_dsp.wav"
+        dsp_path = OUTPUT_DIR / f"{stem}_compare_dsp.wav"
         import soundfile as sf
         sf.write(str(dsp_path), results["dsp"].audio, results["dsp"].sample_rate)
         out["dsp"] = {
@@ -209,7 +213,7 @@ def tune_comparison(
 
         # Save neural result (if available)
         if results["neural"] is not None:
-            nn_path = OUTPUT_DIR / f"{uuid.uuid4()}_neural.wav"
+            nn_path = OUTPUT_DIR / f"{stem}_compare_neural.wav"
             sf.write(str(nn_path), results["neural"].audio, results["neural"].sample_rate)
             out["neural"] = {
                 "method": "neural",
@@ -234,9 +238,11 @@ def tune_by_ref(
     rhythm: str = Form("none"),
 ):
     """Pitch correction using a reference (original singer) audio."""
+    stem = Path(audio.filename).stem if audio.filename else "audio"
     input_path = UPLOAD_DIR / f"{uuid.uuid4()}.wav"
     ref_path = UPLOAD_DIR / f"{uuid.uuid4()}_ref.wav"
-    output_path = OUTPUT_DIR / f"{uuid.uuid4()}.wav"
+    out_name = f"{stem}_tuned_dsp_ref.wav"
+    output_path = OUTPUT_DIR / out_name
 
     try:
         input_path.write_bytes(audio.file.read())
@@ -279,3 +285,8 @@ def download_file(filename: str):
 # Serve frontend
 if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="127.0.0.1", port=5050, reload=True)

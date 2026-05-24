@@ -24,10 +24,10 @@ class _ResBlock(nn.Module):
         super().__init__()
         self.convs = nn.ModuleList()
         for d in dilations:
-            self.convs.append(nn.utils.weight_norm(nn.Conv1d(
+            self.convs.append(nn.Conv1d(
                 channels, channels, kernel_size,
                 dilation=d, padding=_get_padding(kernel_size, d),
-            )))
+            ))
 
     def forward(self, x):
         for conv in self.convs:
@@ -69,21 +69,21 @@ class InferenceGenerator(nn.Module):
         self.input_channels = mel_bins + pitch_bins
         self.upsample_rates = upsample_rates
 
-        self.conv_pre = nn.utils.weight_norm(nn.Conv1d(
-            self.input_channels, h_channels, 7, stride=1, padding=3))
+        self.conv_pre = nn.Conv1d(
+            self.input_channels, h_channels, 7, stride=1, padding=3)
 
         self.upsamples = nn.ModuleList()
         self.mrfs = nn.ModuleList()
         in_ch = h_channels
         for i, (rate, kernel) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
             out_ch = upsample_initial_channel // (2 ** (i + 1))
-            self.upsamples.append(nn.utils.weight_norm(nn.ConvTranspose1d(
+            self.upsamples.append(nn.ConvTranspose1d(
                 in_ch, out_ch, kernel, stride=rate,
-                padding=(kernel - rate) // 2)))
+                padding=(kernel - rate) // 2))
             self.mrfs.append(_MRF(out_ch))
             in_ch = out_ch
 
-        self.conv_post = nn.utils.weight_norm(nn.Conv1d(in_ch, 1, 7, stride=1, padding=3))
+        self.conv_post = nn.Conv1d(in_ch, 1, 7, stride=1, padding=3)
 
     def forward(self, mel: torch.Tensor, pitch: torch.Tensor | None = None) -> torch.Tensor:
         if pitch is not None:

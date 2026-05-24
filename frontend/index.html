@@ -235,6 +235,7 @@
     <div class="tabs">
       <div class="tab active" data-mode="scale">音阶修音 (DSP)</div>
       <div class="tab" data-mode="reference">参考音频 (DSP)</div>
+      <div class="tab" data-mode="neural">AI 修音</div>
       <div class="tab" data-mode="compare">DSP vs AI 对比</div>
     </div>
 
@@ -337,6 +338,70 @@
       </div>
     </div>
 
+    <!-- Neural mode panel -->
+    <div id="mode-neural" class="card" style="display:none;">
+      <div class="card-title">AI 修音 — HiFi-GAN 神经网络</div>
+      <div class="upload-area" id="upload-neural">
+        <div class="upload-icon">&#127925;</div>
+        <div class="upload-text">点击或拖拽上传音频 (WAV/MP3)</div>
+      </div>
+      <input type="file" id="file-neural" accept="audio/*">
+      <div class="options">
+        <div class="option">
+          <label>歌曲调性</label>
+          <select id="key-neural">
+            <option value="auto">自动检测</option>
+            <option value="C">C</option><option value="C#">C#</option>
+            <option value="D">D</option><option value="D#">D#</option>
+            <option value="E">E</option><option value="F">F</option>
+            <option value="F#">F#</option><option value="G">G</option>
+            <option value="G#">G#</option><option value="A">A</option>
+            <option value="A#">A#</option><option value="B">B</option>
+          </select>
+        </div>
+        <div class="option">
+          <label>音阶类型</label>
+          <select id="scale-neural">
+            <option value="major">大调</option>
+            <option value="minor">小调</option>
+            <option value="harmonic_minor">和声小调</option>
+            <option value="pentatonic_major">五声大调</option>
+            <option value="pentatonic_minor">五声小调</option>
+            <option value="chromatic">半音阶（全修）</option>
+          </select>
+        </div>
+        <div class="option" style="grid-column: span 2;">
+          <label>修正力度: <span id="strength-neural-val">1.0</span></label>
+          <input type="range" id="strength-neural" min="0.1" max="1.0" step="0.1" value="1.0">
+        </div>
+        <div class="option">
+          <label>节奏修正</label>
+          <select id="rhythm-neural">
+            <option value="none">不修正</option>
+            <option value="grid">节拍网格对齐</option>
+            <option value="reference">参考音频</option>
+          </select>
+        </div>
+        <div class="option" id="rhythm-bpm-neural-opt" style="display:none;">
+          <label>BPM (留空自动检测)</label>
+          <input type="number" id="rhythm-bpm-neural" placeholder="自动" min="40" max="300" step="1">
+        </div>
+        <div class="upload-area" id="upload-rhythm-ref-neural" style="display:none; margin-top: 8px; grid-column: span 2;">
+          <div class="upload-icon">🎵</div>
+          <div class="upload-text">上传节奏参考音频</div>
+        </div>
+        <input type="file" id="file-rhythm-ref-neural" accept="audio/*">
+      </div>
+      <button class="btn btn-primary" id="btn-neural" disabled>AI 修音</button>
+      <div class="result" id="result-neural">
+        <div class="stat"><span>检测调性</span><span id="res-neural-key">-</span></div>
+        <div class="stat"><span>处理帧数</span><span id="res-neural-frames">-</span></div>
+        <div class="stat"><span>修正帧数</span><span id="res-neural-corrected">-</span></div>
+        <div class="stat"><span>平均修正量</span><span id="res-neural-cents">-</span></div>
+        <a class="btn-download" id="btn-download-neural-only" href="#" download>下载 AI 修复音频</a>
+      </div>
+    </div>
+
     <!-- Comparison mode panel -->
     <div id="mode-compare" class="card" style="display:none;">
       <div class="card-title">DSP vs AI 对比 — 同一段音频，两种方式同时修</div>
@@ -398,12 +463,14 @@
     let currentMode = 'scale';
     const scaleFile = { file: null, rhythmRef: null };
     const refFiles = { input: null, ref: null };
+    const neuralFile = { file: null, rhythmRef: null };
     const compareFile = { file: null };
 
     // --- Tab switching ---
     const panels = {
       scale: 'mode-scale',
       reference: 'mode-reference',
+      neural: 'mode-neural',
       compare: 'mode-compare',
     };
     document.querySelectorAll('.tab').forEach(tab => {
@@ -476,6 +543,32 @@
         document.getElementById('upload-rhythm-ref-scale').classList.add('has-file');
         document.getElementById('upload-rhythm-ref-scale').querySelector('.upload-text').textContent = this.files[0].name;
       }
+    });
+
+    // Neural mode
+    setupUpload('upload-neural', 'file-neural', (f) => { neuralFile.file = f; document.getElementById('btn-neural').disabled = false; });
+    document.getElementById('file-neural').addEventListener('change', function() {
+      if (this.files[0]) {
+        neuralFile.file = this.files[0];
+        document.getElementById('upload-neural').classList.add('has-file');
+        document.getElementById('upload-neural').querySelector('.upload-text').textContent = this.files[0].name;
+        document.getElementById('btn-neural').disabled = false;
+      }
+    });
+    document.getElementById('rhythm-neural').addEventListener('change', function() {
+      document.getElementById('rhythm-bpm-neural-opt').style.display = this.value === 'grid' ? 'block' : 'none';
+      document.getElementById('upload-rhythm-ref-neural').style.display = this.value === 'reference' ? 'block' : 'none';
+    });
+    setupUpload('upload-rhythm-ref-neural', 'file-rhythm-ref-neural', (f) => { neuralFile.rhythmRef = f; });
+    document.getElementById('file-rhythm-ref-neural').addEventListener('change', function() {
+      if (this.files[0]) {
+        neuralFile.rhythmRef = this.files[0];
+        document.getElementById('upload-rhythm-ref-neural').classList.add('has-file');
+        document.getElementById('upload-rhythm-ref-neural').querySelector('.upload-text').textContent = this.files[0].name;
+      }
+    });
+    document.getElementById('strength-neural').addEventListener('input', function() {
+      document.getElementById('strength-neural-val').textContent = this.value;
     });
 
     // Reference mode
@@ -576,6 +669,38 @@
         const res = await fetch('/api/tune/reference', { method: 'POST', body: fd });
         const json = await handleResponse(res);
         fillResult(json, 'res-ref-key', 'res-ref-frames', 'res-ref-corrected', 'res-ref-cents', 'btn-download-ref');
+        result.classList.add('show');
+      } catch (e) {
+        showError(e.message);
+      } finally {
+        loading.classList.remove('show');
+      }
+    });
+
+    // --- Neural mode submit ---
+    document.getElementById('btn-neural').addEventListener('click', async () => {
+      const loading = document.getElementById('loading');
+      const result = document.getElementById('result-neural');
+      result.classList.remove('show');
+      document.getElementById('error').classList.remove('show');
+      loading.classList.add('show');
+
+      try {
+        const fd = new FormData();
+        fd.append('audio', neuralFile.file);
+        fd.append('key', document.getElementById('key-neural').value);
+        fd.append('scale', document.getElementById('scale-neural').value);
+        fd.append('strength', document.getElementById('strength-neural').value);
+        fd.append('rhythm', document.getElementById('rhythm-neural').value);
+        const bpm = document.getElementById('rhythm-bpm-neural').value;
+        if (bpm) fd.append('rhythm_bpm', parseFloat(bpm));
+        if (document.getElementById('rhythm-neural').value === 'reference' && neuralFile.rhythmRef) {
+          fd.append('rhythm_ref', neuralFile.rhythmRef);
+        }
+
+        const res = await fetch('/api/tune/neural', { method: 'POST', body: fd });
+        const json = await handleResponse(res);
+        fillResult(json, 'res-neural-key', 'res-neural-frames', 'res-neural-corrected', 'res-neural-cents', 'btn-download-neural-only');
         result.classList.add('show');
       } catch (e) {
         showError(e.message);
