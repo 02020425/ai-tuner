@@ -90,7 +90,13 @@ class InferenceGenerator(nn.Module):
             pitch = F.interpolate(
                 pitch.unsqueeze(1), size=mel.shape[2],
                 mode="linear", align_corners=False)
-            x = torch.cat([mel, pitch], dim=1)
+            # Normalize pitch to match training: tanh(log2(hz/440) / 4.0) → [-1, 1]
+            voiced = pitch > 20.0
+            pitch_feat = torch.zeros_like(pitch)
+            if voiced.any():
+                log_pitch = torch.log2(torch.clamp(pitch, min=20.0) / 440.0)
+                pitch_feat = torch.tanh(log_pitch / 4.0)
+            x = torch.cat([mel, pitch_feat], dim=1)
         else:
             x = torch.cat([
                 mel,

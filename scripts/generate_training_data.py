@@ -229,7 +229,7 @@ def generate_dataset(
     audio_extensions = ["*.wav", "*.mp3", "*.flac"]
     audio_files = []
     for ext in audio_extensions:
-        audio_files.extend(list(input_path.glob(ext)))
+        audio_files.extend(list(input_path.rglob(ext)))
 
     if not audio_files:
         print(f"No audio files found in {input_dir}")
