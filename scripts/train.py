@@ -311,7 +311,7 @@ def train(args):
                 y_gen = y_gen[..., :y_clean.shape[-1]]
 
             mpd_real, msd_real = discriminator(y_clean.unsqueeze(1))
-            mpd_fake, msd_fake = discriminator(y_gen.detach())
+            mpd_fake, msd_fake = discriminator(y_gen.detach().float())
 
             loss_d = discriminator_loss(
                 [r[0] for r in mpd_real] + [r[0] for r in msd_real],
@@ -331,7 +331,7 @@ def train(args):
                 y_gen = generator(mel_shifted, target_f0)
             y_gen = y_gen[..., :y_clean.shape[-1]]
 
-            mpd_fake, msd_fake = discriminator(y_gen)
+            mpd_fake, msd_fake = discriminator(y_gen.float())
             mpd_real, msd_real = discriminator(y_clean.unsqueeze(1))
 
             # Mel-spectrogram loss
