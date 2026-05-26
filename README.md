@@ -103,7 +103,7 @@ pip install -r scripts/requirements_train.txt
 python scripts/generate_training_data.py \
     --input_dir data/clean/ \
     --output_dir data/training/ \
-    --pairs_per_file 50 \
+    --pairs_per_file 20 \
     --formant_shift_ratio 0.4
 
 # 4. 训练模型

@@ -24,7 +24,7 @@ import soundfile as sf
 
 
 def _apply_pitch_shift(
-    f0_seg: np.ndarray,
+    f0_seg: np.ndarray, 
     sp_seg: np.ndarray,
     shift_cents: float,
     formant_shift_ratio: float,
@@ -262,7 +262,7 @@ if __name__ == "__main__":
                         help="Directory of clean vocal audio files")
     parser.add_argument("--output_dir", default="data/training/",
                         help="Output directory for paired data")
-    parser.add_argument("--pairs_per_file", type=int, default=30,
+    parser.add_argument("--pairs_per_file", type=int, default=20,
                         help="Number of variations per input file")
     parser.add_argument("--max_shift_cents", type=float, default=300.0,
                         help="Maximum pitch deviation in cents")
