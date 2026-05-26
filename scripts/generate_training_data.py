@@ -19,6 +19,26 @@ import soundfile as sf
 from tqdm import tqdm
 
 
+def _shift_spectral_envelope(sp: np.ndarray, ratio: float) -> np.ndarray:
+    """Shift spectral envelope by ratio via linear interpolation on frequency axis."""
+    n_bins = len(sp)
+    old_indices = np.arange(n_bins, dtype=np.float64)
+    new_indices = old_indices / ratio
+    shifted = np.zeros_like(sp)
+    for i in range(n_bins):
+        src = new_indices[i]
+        lo = int(np.floor(src))
+        hi = min(lo + 1, n_bins - 1)
+        if lo < 0:
+            shifted[i] = sp[0]
+        elif lo >= n_bins - 1:
+            shifted[i] = sp[-1]
+        else:
+            frac = src - lo
+            shifted[i] = sp[lo] * (1 - frac) + sp[hi] * frac
+    return shifted
+
+
 def _apply_pitch_shift(
     f0_seg: np.ndarray,
     sp_seg: np.ndarray,
@@ -30,19 +50,15 @@ def _apply_pitch_shift(
     if abs(shift_cents) < 0.1:
         return f0_new, sp_seg
     factor = 2.0 ** (shift_cents / 1200.0)
-    voiced = f0_seg > 0
-    n_voiced = voiced.sum()
-    f0_new[voiced] *= factor
-    if formant_shift_ratio > 0 and n_voiced > 0:
+    for i in range(len(f0_seg)):
+        if f0_seg[i] > 0:
+            f0_new[i] = f0_seg[i] * factor
+    if formant_shift_ratio > 0:
         env_ratio = 1.0 + (factor - 1.0) * formant_shift_ratio
-        n_bins = sp_seg.shape[1]
-        src = np.arange(n_bins) / env_ratio
-        lo = np.clip(np.floor(src).astype(np.intp), 0, n_bins - 1)
-        hi = np.clip(lo + 1, 0, n_bins - 1)
-        frac = src - lo.astype(np.float64)
         sp_new = sp_seg.copy()
-        for i in np.where(voiced)[0]:
-            sp_new[i] = sp_seg[i][lo] * (1 - frac) + sp_seg[i][hi] * frac
+        for i in range(len(sp_seg)):
+            if f0_seg[i] > 0:
+                sp_new[i] = _shift_spectral_envelope(sp_seg[i], env_ratio)
         return f0_new, sp_new
     return f0_new, sp_seg
 
