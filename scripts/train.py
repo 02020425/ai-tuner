@@ -57,7 +57,7 @@ class TrainConfig:
     pitch_bins: int = 1
 
     # Training
-    batch_size: int = 8
+    batch_size: int = 16
     learning_rate: float = 2e-4
     lr_decay: float = 0.999
     adam_b1: float = 0.8
@@ -110,16 +110,26 @@ class PairedVocalDataset(Dataset):
         y_clean, _ = sf.read(str(clean_path))
         y_shifted, _ = sf.read(str(shifted_path))
 
+        # Load precomputed WORLD F0 (stored as float32 .npy)
+        f0_path = self.pairs_dir / pair["f0"]
+        f0_full = np.load(str(f0_path))
+
         # Ensure same length
         min_len = min(len(y_clean), len(y_shifted))
         y_clean = y_clean[:min_len]
         y_shifted = y_shifted[:min_len]
 
-        # Random segment or pad
+        # Random segment or pad (keep F0 aligned with audio)
         if min_len >= self.segment_samples:
             start = random.randint(0, min_len - self.segment_samples)
             y_clean = y_clean[start:start + self.segment_samples]
             y_shifted = y_shifted[start:start + self.segment_samples]
+
+            # Slice F0: convert sample index to frame index (5ms hop = sample_rate * 0.005)
+            frame_period = int(self.sample_rate * 0.005)
+            f0_start = start // frame_period
+            f0_end = (start + self.segment_samples + frame_period - 1) // frame_period
+            f0_full = f0_full[f0_start:f0_end]
         else:
             y_clean = np.pad(y_clean, (0, self.segment_samples - min_len))
             y_shifted = np.pad(y_shifted, (0, self.segment_samples - min_len))
@@ -127,6 +137,7 @@ class PairedVocalDataset(Dataset):
         return (
             torch.from_numpy(y_shifted).float(),
             torch.from_numpy(y_clean).float(),
+            torch.from_numpy(f0_full).float(),
         )
 
 
@@ -245,6 +256,7 @@ def train(args):
 
     # Training loop
     global_step = 0
+    scaler = torch.cuda.amp.GradScaler()
 
     for epoch in range(start_epoch, config.num_epochs):
         generator.train()
@@ -255,17 +267,17 @@ def train(args):
         epoch_loss_d = 0.0
 
         for batch in pbar:
-            y_shifted, y_clean = batch
+            y_shifted, y_clean, target_f0 = batch
             y_shifted = y_shifted.to(device)
             y_clean = y_clean.to(device)
+            target_f0 = target_f0.to(device)
             # Align lengths: dataset may return slightly different durations
             min_len = min(y_shifted.shape[-1], y_clean.shape[-1])
             y_shifted = y_shifted[..., :min_len]
             y_clean = y_clean[..., :min_len]
-            B = y_shifted.shape[0]
 
             # ----------------------------------------------------------------
-            # Extract features
+            # Extract features (mel on GPU; F0 precomputed by WORLD)
             # ----------------------------------------------------------------
             with torch.no_grad():
                 mel_shifted = extract_mel(
@@ -273,23 +285,15 @@ def train(args):
                     config.hop_length, config.win_length, config.mel_bins,
                 )
 
-                mel_clean = extract_mel(
-                    y_clean, config.sample_rate, config.n_fft,
-                    config.hop_length, config.win_length, config.mel_bins,
-                )
-
-                # Extract pitch from clean audio as the "target pitch"
-                target_pitch = []
-                for b in range(B):
-                    y_np = y_clean[b].cpu().numpy()
-                    f0_b = extract_pitch(y_np, config.sample_rate, config.hop_length)
-                    # Pad/trim to match mel length
-                    if len(f0_b) < mel_clean.shape[2]:
-                        f0_b = np.pad(f0_b, (0, mel_clean.shape[2] - len(f0_b)))
-                    else:
-                        f0_b = f0_b[:mel_clean.shape[2]]
-                    target_pitch.append(torch.from_numpy(f0_b))
-                target_pitch = torch.stack(target_pitch).to(device)
+                # Resample precomputed F0 to match mel frame count
+                mel_frames = mel_shifted.shape[2]
+                if target_f0.shape[-1] != mel_frames:
+                    target_f0 = F.interpolate(
+                        target_f0.unsqueeze(1),
+                        size=mel_frames,
+                        mode="linear",
+                        align_corners=False,
+                    ).squeeze(1)
 
             # ----------------------------------------------------------------
             # Train Discriminator
@@ -297,7 +301,8 @@ def train(args):
             opt_d.zero_grad()
 
             with torch.no_grad():
-                y_gen = generator(mel_shifted, target_pitch)
+                with torch.cuda.amp.autocast():
+                    y_gen = generator(mel_shifted, target_f0)
                 y_gen = y_gen[..., :y_clean.shape[-1]]
 
             mpd_real, msd_real = discriminator(y_clean.unsqueeze(1))
@@ -307,16 +312,18 @@ def train(args):
                 [r[0] for r in mpd_real] + [r[0] for r in msd_real],
                 [f[0] for f in mpd_fake] + [f[0] for f in msd_fake],
             )
-            loss_d.backward()
+            scaler.scale(loss_d).backward()
+            scaler.unscale_(opt_d)
             torch.nn.utils.clip_grad_norm_(discriminator.parameters(), config.grad_clip)
-            opt_d.step()
+            scaler.step(opt_d)
 
             # ----------------------------------------------------------------
             # Train Generator
             # ----------------------------------------------------------------
             opt_g.zero_grad()
 
-            y_gen = generator(mel_shifted, target_pitch)
+            with torch.cuda.amp.autocast():
+                y_gen = generator(mel_shifted, target_f0)
             y_gen = y_gen[..., :y_clean.shape[-1]]
 
             mpd_fake, msd_fake = discriminator(y_gen)
@@ -340,9 +347,11 @@ def train(args):
                 config.lambda_fm * loss_fm +
                 config.lambda_adv * loss_adv
             )
-            loss_g.backward()
+            scaler.scale(loss_g).backward()
+            scaler.unscale_(opt_g)
             torch.nn.utils.clip_grad_norm_(generator.parameters(), config.grad_clip)
-            opt_g.step()
+            scaler.step(opt_g)
+            scaler.update()
 
             # Logging
             epoch_loss_g += loss_g.item()
@@ -420,7 +429,7 @@ if __name__ == "__main__":
                         help="Resume from latest checkpoint")
 
     # Training hyperparams
-    parser.add_argument("--batch_size", type=int, default=8,
+    parser.add_argument("--batch_size", type=int, default=16,
                         help="Batch size (reduce if OOM)")
     parser.add_argument("--num_epochs", type=int, default=100,
                         help="Number of training epochs")

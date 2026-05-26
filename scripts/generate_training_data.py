@@ -174,14 +174,17 @@ def generate_dataset(
 
                 clean_path = pairs_dir / f"{pair_idx:05d}_clean.wav"
                 shifted_path = pairs_dir / f"{pair_idx:05d}_shifted.wav"
+                f0_path = pairs_dir / f"{pair_idx:05d}_f0.npy"
 
                 sf.write(str(clean_path), y_clean, sr)
                 sf.write(str(shifted_path), y_shifted, sr)
+                np.save(str(f0_path), f0_seg.astype(np.float32))
 
                 metadata["pairs"].append({
                     "id": pair_idx,
                     "clean": str(clean_path.name),
                     "shifted": str(shifted_path.name),
+                    "f0": str(f0_path.name),
                     "source_file": audio_file.name,
                     "duration_sec": round(min_len / sr, 2),
                 })
