@@ -19,14 +19,6 @@ import soundfile as sf
 from tqdm import tqdm
 
 
-def _shift_spectral_envelope(sp: np.ndarray, ratio: float) -> np.ndarray:
-    """Shift spectral envelope by ratio via linear interpolation on frequency axis."""
-    n_bins = len(sp)
-    tgt_indices = np.arange(n_bins)
-    src_indices = tgt_indices / ratio
-    return np.interp(src_indices, tgt_indices, sp)
-
-
 def _apply_pitch_shift(
     f0_seg: np.ndarray,
     sp_seg: np.ndarray,
@@ -39,15 +31,18 @@ def _apply_pitch_shift(
         return f0_new, sp_seg
     factor = 2.0 ** (shift_cents / 1200.0)
     voiced = f0_seg > 0
+    n_voiced = voiced.sum()
     f0_new[voiced] *= factor
-    if formant_shift_ratio > 0:
+    if formant_shift_ratio > 0 and n_voiced > 0:
         env_ratio = 1.0 + (factor - 1.0) * formant_shift_ratio
-        sp_new = sp_seg.copy()
         n_bins = sp_seg.shape[1]
-        tgt_indices = np.arange(n_bins)
-        src_indices = tgt_indices / env_ratio
-        for i in np.where(voiced)[0]:
-            sp_new[i] = np.interp(src_indices, tgt_indices, sp_seg[i])
+        src = np.arange(n_bins) / env_ratio
+        lo = np.clip(np.floor(src).astype(np.intp), 0, n_bins - 1)
+        hi = np.clip(lo + 1, 0, n_bins - 1)
+        frac = src - lo.astype(np.float64)
+        sp_new = sp_seg.copy()
+        sp_voiced = sp_seg[voiced]
+        sp_new[voiced] = sp_voiced[:, lo] * (1 - frac) + sp_voiced[:, hi] * frac
         return f0_new, sp_new
     return f0_new, sp_seg
 
