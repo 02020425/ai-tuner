@@ -41,8 +41,8 @@ def _apply_pitch_shift(
         hi = np.clip(lo + 1, 0, n_bins - 1)
         frac = src - lo.astype(np.float64)
         sp_new = sp_seg.copy()
-        sp_voiced = sp_seg[voiced]
-        sp_new[voiced] = sp_voiced[:, lo] * (1 - frac) + sp_voiced[:, hi] * frac
+        for i in np.where(voiced)[0]:
+            sp_new[i] = sp_seg[i][lo] * (1 - frac) + sp_seg[i][hi] * frac
         return f0_new, sp_new
     return f0_new, sp_seg
 
