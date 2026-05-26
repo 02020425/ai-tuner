@@ -130,6 +130,11 @@ class PairedVocalDataset(Dataset):
             f0_start = start // frame_period
             f0_end = (start + self.segment_samples + frame_period - 1) // frame_period
             f0_full = f0_full[f0_start:f0_end]
+            expected_f0_frames = (self.segment_samples + frame_period - 1) // frame_period
+            if f0_full.shape[0] < expected_f0_frames:
+                f0_full = np.pad(f0_full, (0, expected_f0_frames - f0_full.shape[0]))
+            else:
+                f0_full = f0_full[:expected_f0_frames]
         else:
             y_clean = np.pad(y_clean, (0, self.segment_samples - min_len))
             y_shifted = np.pad(y_shifted, (0, self.segment_samples - min_len))
