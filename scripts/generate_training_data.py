@@ -6,17 +6,21 @@ training examples by applying controlled random pitch deviations.
 
 WORLD analysis (expensive) is done once per input file. Each training pair
 randomly selects a segment, applies a single pitch shift, and synthesizes.
+
+Supports multi-threaded file processing via --num_workers. pyworld C functions
+release the GIL, so I/O and WORLD synthesis scale across threads.
 """
 
 import argparse
 import json
+import os
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
 import pyworld as pw
 import soundfile as sf
-from tqdm import tqdm
 
 
 def _apply_pitch_shift(
@@ -46,6 +50,117 @@ def _apply_pitch_shift(
     return f0_new, sp_seg
 
 
+def _process_file(args):
+    """Process a single audio file: WORLD analysis + generate pairs.
+
+    Runs in a worker thread. Returns (file_name, pairs_metadata, pair_count).
+    """
+    (audio_file, pairs_dir, base_idx, pairs_per_file, max_shift_cents,
+     target_sr, max_duration_sec, formant_shift_ratio, min_clean_ratio) = args
+
+    try:
+        y, sr = sf.read(str(audio_file))
+    except Exception as e:
+        print(f"  Skipping {audio_file.name}: {e}")
+        return audio_file.name, [], 0
+
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+
+    if sr != target_sr:
+        import librosa
+        y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
+        sr = target_sr
+
+    if len(y) < sr:
+        return audio_file.name, [], 0
+
+    # WORLD analysis ONCE per file
+    y_f64 = y.astype(np.float64)
+    try:
+        f0, t = pw.dio(y_f64, sr, f0_floor=65.0, f0_ceil=1047.0, frame_period=5.0)
+        f0 = pw.stonemask(y_f64, f0, t, sr)
+        sp = pw.cheaptrick(y_f64, f0, t, sr)
+        ap = pw.d4c(y_f64, f0, t, sr)
+    except Exception:
+        return audio_file.name, [], 0
+
+    n_frames = len(f0)
+    total_samples = len(y)
+    frame_period_samples = int(target_sr * 0.005)
+
+    pairs_metadata = []
+    pair_idx = 0
+    failed = 0
+
+    for _ in range(pairs_per_file):
+        segment_dur = random.uniform(3.0, min(max_duration_sec, total_samples / sr))
+        seg_samples = int(segment_dur * sr)
+
+        if seg_samples >= total_samples:
+            start_sample = 0
+        else:
+            start_sample = random.randint(0, total_samples - seg_samples)
+
+        end_sample = start_sample + seg_samples
+        segment_clean = y[start_sample:end_sample]
+
+        start_frame = start_sample // frame_period_samples
+        end_frame = min(n_frames, (end_sample + frame_period_samples - 1) // frame_period_samples)
+        if end_frame <= start_frame:
+            failed += 1
+            continue
+
+        if random.random() < min_clean_ratio:
+            shift_cents = 0.0
+        else:
+            sign = random.choice([-1, 1])
+            shift_cents = sign * random.uniform(20.0, max_shift_cents)
+
+        try:
+            f0_seg = f0[start_frame:end_frame]
+            sp_seg = sp[start_frame:end_frame]
+            ap_seg = ap[start_frame:end_frame]
+
+            f0_shifted, sp_shifted = _apply_pitch_shift(
+                f0_seg, sp_seg, shift_cents, formant_shift_ratio)
+
+            y_shifted = pw.synthesize(f0_shifted, sp_shifted, ap_seg, sr)
+            y_shifted = y_shifted.astype(np.float32)
+
+            min_len = min(len(y_shifted), len(segment_clean))
+            y_shifted = y_shifted[:min_len]
+            y_clean = segment_clean[:min_len].astype(np.float32)
+
+            global_id = base_idx + pair_idx
+            clean_path = pairs_dir / f"{global_id:05d}_clean.wav"
+            shifted_path = pairs_dir / f"{global_id:05d}_shifted.wav"
+            f0_path = pairs_dir / f"{global_id:05d}_f0.npy"
+
+            sf.write(str(clean_path), y_clean, sr)
+            sf.write(str(shifted_path), y_shifted, sr)
+            np.save(str(f0_path), f0_seg.astype(np.float32))
+
+            pairs_metadata.append({
+                "id": global_id,
+                "clean": str(clean_path.name),
+                "shifted": str(shifted_path.name),
+                "f0": str(f0_path.name),
+                "source_file": audio_file.name,
+                "duration_sec": round(min_len / sr, 2),
+            })
+            pair_idx += 1
+
+        except Exception:
+            failed += 1
+            continue
+
+    if failed:
+        print(f"  {audio_file.name}: {failed} pairs failed")
+
+    return audio_file.name, pairs_metadata, pair_idx
+
+
 def generate_dataset(
     input_dir: str,
     output_dir: str,
@@ -55,6 +170,7 @@ def generate_dataset(
     max_duration_sec: float = 15.0,
     formant_shift_ratio: float = 0.4,
     min_clean_ratio: float = 0.05,
+    num_workers: int = 1,
 ):
     input_path = Path(input_dir)
     output_path = Path(output_dir)
@@ -64,12 +180,24 @@ def generate_dataset(
     audio_extensions = ["*.wav", "*.mp3", "*.flac"]
     audio_files = []
     for ext in audio_extensions:
-        audio_files.extend(list(input_path.rglob(ext)))
+        audio_files.extend(sorted(input_path.rglob(ext)))
 
     if not audio_files:
         print(f"No audio files found in {input_dir}")
         print("Place clean vocal WAV/MP3/FLAC files in data/clean/ and re-run.")
         return
+
+    print(f"Found {len(audio_files)} audio files")
+    print(f"Using {num_workers} workers (multi-threaded, pyworld releases GIL)")
+
+    # Assign base index to each file so workers write non-conflicting filenames
+    file_args = []
+    for i, audio_file in enumerate(audio_files):
+        file_args.append((
+            audio_file, str(pairs_dir), i * pairs_per_file,
+            pairs_per_file, max_shift_cents, target_sr,
+            max_duration_sec, formant_shift_ratio, min_clean_ratio,
+        ))
 
     metadata = {
         "total_pairs": 0,
@@ -81,107 +209,45 @@ def generate_dataset(
         "pairs": [],
     }
 
-    pair_idx = 0
-    frame_period_samples = int(target_sr * 0.005)
+    total_pairs = 0
+    completed = 0
+    failed_files = 0
 
-    for audio_file in tqdm(audio_files, desc="Processing files"):
-        try:
-            y, sr = sf.read(str(audio_file))
-        except Exception as e:
-            print(f"  Skipping {audio_file.name}: {e}")
-            continue
+    if num_workers <= 1:
+        # Single-threaded path (avoids thread overhead for --num_workers 1)
+        from tqdm import tqdm as _tqdm
+        for args_tuple in _tqdm(file_args, desc="Processing files"):
+            fname, pairs, count = _process_file(args_tuple)
+            metadata["pairs"].extend(pairs)
+            total_pairs += count
+            completed += 1
+            if count == 0:
+                failed_files += 1
+    else:
+        from tqdm import tqdm as _tqdm
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(_process_file, a): a[0].name for a in file_args}
+            with _tqdm(total=len(file_args), desc="Processing files") as pbar:
+                for future in as_completed(futures):
+                    fname, pairs, count = future.result()
+                    metadata["pairs"].extend(pairs)
+                    total_pairs += count
+                    completed += 1
+                    if count == 0:
+                        failed_files += 1
+                    pbar.set_postfix(pairs=total_pairs, failed=failed_files)
+                    pbar.update(1)
 
-        if y.ndim > 1:
-            y = y.mean(axis=1)
-
-        if sr != target_sr:
-            import librosa
-            y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
-            sr = target_sr
-
-        if len(y) < sr:
-            continue
-
-        # WORLD analysis ONCE per file
-        y_f64 = y.astype(np.float64)
-        try:
-            f0, t = pw.dio(y_f64, sr, f0_floor=65.0, f0_ceil=1047.0, frame_period=5.0)
-            f0 = pw.stonemask(y_f64, f0, t, sr)
-            sp = pw.cheaptrick(y_f64, f0, t, sr)
-            ap = pw.d4c(y_f64, f0, t, sr)
-        except Exception:
-            continue
-
-        n_frames = len(f0)
-        total_samples = len(y)
-
-        for _ in range(pairs_per_file):
-            segment_dur = random.uniform(3.0, min(max_duration_sec, total_samples / sr))
-            seg_samples = int(segment_dur * sr)
-
-            if seg_samples >= total_samples:
-                start_sample = 0
-            else:
-                start_sample = random.randint(0, total_samples - seg_samples)
-
-            end_sample = start_sample + seg_samples
-            segment_clean = y[start_sample:end_sample]
-
-            start_frame = start_sample // frame_period_samples
-            end_frame = min(n_frames, (end_sample + frame_period_samples - 1) // frame_period_samples)
-            if end_frame <= start_frame:
-                continue
-
-            # Random shift: either clean or a random deviation
-            if random.random() < min_clean_ratio:
-                shift_cents = 0.0
-            else:
-                sign = random.choice([-1, 1])
-                shift_cents = sign * random.uniform(20.0, max_shift_cents)
-
-            try:
-                f0_seg = f0[start_frame:end_frame]
-                sp_seg = sp[start_frame:end_frame]
-                ap_seg = ap[start_frame:end_frame]
-
-                f0_shifted, sp_shifted = _apply_pitch_shift(
-                    f0_seg, sp_seg, shift_cents, formant_shift_ratio)
-
-                y_shifted = pw.synthesize(f0_shifted, sp_shifted, ap_seg, sr)
-                y_shifted = y_shifted.astype(np.float32)
-
-                # Trim to same length
-                min_len = min(len(y_shifted), len(segment_clean))
-                y_shifted = y_shifted[:min_len]
-                y_clean = segment_clean[:min_len].astype(np.float32)
-
-                clean_path = pairs_dir / f"{pair_idx:05d}_clean.wav"
-                shifted_path = pairs_dir / f"{pair_idx:05d}_shifted.wav"
-                f0_path = pairs_dir / f"{pair_idx:05d}_f0.npy"
-
-                sf.write(str(clean_path), y_clean, sr)
-                sf.write(str(shifted_path), y_shifted, sr)
-                np.save(str(f0_path), f0_seg.astype(np.float32))
-
-                metadata["pairs"].append({
-                    "id": pair_idx,
-                    "clean": str(clean_path.name),
-                    "shifted": str(shifted_path.name),
-                    "f0": str(f0_path.name),
-                    "source_file": audio_file.name,
-                    "duration_sec": round(min_len / sr, 2),
-                })
-                pair_idx += 1
-
-            except Exception:
-                continue
-
-    metadata["total_pairs"] = pair_idx
+    # Sort pairs by id for consistent ordering
+    metadata["pairs"].sort(key=lambda p: p["id"])
+    metadata["total_pairs"] = total_pairs
 
     with open(output_path / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
 
-    print(f"\nGenerated {pair_idx} training pairs in {output_path}")
+    print(f"\nGenerated {total_pairs} training pairs in {output_path}")
+    print(f"  Processed {completed}/{len(audio_files)} files"
+          f"{f' ({failed_files} failed)' if failed_files else ''}")
     print(f"  Clean audio  → {pairs_dir}/XXXXX_clean.wav")
     print(f"  Shifted audio → {pairs_dir}/XXXXX_shifted.wav")
     print(f"  Metadata     → {output_path}/metadata.json")
@@ -206,6 +272,8 @@ if __name__ == "__main__":
     parser.add_argument("--formant_shift_ratio", type=float, default=0.4,
                         help="Formant coupling ratio (0.0=pure f0 shift, "
                              "0.4=moderate, 1.0=full coupling)")
+    parser.add_argument("--num_workers", type=int, default=1,
+                        help="Number of parallel worker threads")
     args = parser.parse_args()
 
     generate_dataset(
@@ -216,4 +284,5 @@ if __name__ == "__main__":
         target_sr=args.target_sr,
         max_duration_sec=args.max_duration_sec,
         formant_shift_ratio=args.formant_shift_ratio,
+        num_workers=args.num_workers,
     )
