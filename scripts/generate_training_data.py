@@ -57,6 +57,7 @@ def _process_file(args):
     """
     (audio_file, pairs_dir, base_idx, pairs_per_file, max_shift_cents,
      target_sr, max_duration_sec, formant_shift_ratio, min_clean_ratio) = args
+    pairs_dir = Path(pairs_dir)
 
     try:
         y, sr = sf.read(str(audio_file))
