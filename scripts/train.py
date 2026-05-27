@@ -150,6 +150,9 @@ class PairedVocalDataset(Dataset):
 # Mel & pitch extraction
 # ---------------------------------------------------------------------------
 
+# Cached mel filter banks: keyed by (sr, n_fft, n_mels, device)
+_mel_basis_cache: dict = {}
+
 def extract_mel(y: torch.Tensor, sr: int, n_fft: int, hop: int, win: int,
                 n_mels: int) -> torch.Tensor:
     """Extract log-mel spectrogram from waveform."""
@@ -157,11 +160,13 @@ def extract_mel(y: torch.Tensor, sr: int, n_fft: int, hop: int, win: int,
     spec = torch.stft(y, n_fft, hop, win, window, return_complex=True).abs()
     spec = spec ** 2  # power spectrum
 
-    # Mel filter
-    from librosa.filters import mel as mel_fn
-    mel_basis = torch.from_numpy(
-        mel_fn(sr=sr, n_fft=n_fft, n_mels=n_mels)
-    ).float().to(y.device)
+    cache_key = (sr, n_fft, n_mels, y.device)
+    if cache_key not in _mel_basis_cache:
+        from librosa.filters import mel as mel_fn
+        _mel_basis_cache[cache_key] = torch.from_numpy(
+            mel_fn(sr=sr, n_fft=n_fft, n_mels=n_mels)
+        ).float().to(y.device)
+    mel_basis = _mel_basis_cache[cache_key]
 
     mel = torch.matmul(mel_basis, spec)
     mel = torch.log(torch.clamp(mel, min=1e-5))
@@ -185,6 +190,7 @@ def extract_pitch(y: np.ndarray, sr: int, hop_length: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def train(args):
+    torch.set_float32_matmul_precision("medium")
     config = TrainConfig()
     # Override from args
     config.batch_size = args.batch_size
@@ -207,6 +213,8 @@ def train(args):
         num_workers=args.num_workers,
         drop_last=True,
         pin_memory=(config.device == "cuda"),
+        persistent_workers=(args.num_workers > 0),
+        prefetch_factor=2 if args.num_workers > 0 else None,
     )
     print(f"Dataset: {len(dataset)} pairs, {len(dataloader)} batches/epoch")
 
@@ -442,7 +450,7 @@ if __name__ == "__main__":
                         help="Learning rate")
     parser.add_argument("--device", default=None,
                         help="Device: cuda / cpu")
-    parser.add_argument("--num_workers", type=int, default=2,
+    parser.add_argument("--num_workers", type=int, default=4,
                         help="DataLoader workers")
 
     args = parser.parse_args()
