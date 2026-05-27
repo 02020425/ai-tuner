@@ -244,6 +244,10 @@ def train(args):
         start_epoch = ckpt["epoch"] + 1
         print(f"Resumed from epoch {start_epoch}")
 
+    print("Compiling models (first step will be slow)...")
+    generator = torch.compile(generator, mode="max-autotune")
+    discriminator = torch.compile(discriminator, mode="max-autotune")
+
     # Optimizers
     opt_g = torch.optim.AdamW(
         generator.parameters(),
