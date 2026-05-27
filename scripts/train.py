@@ -18,6 +18,7 @@ Usage:
 import argparse
 import json
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -280,6 +281,10 @@ def train(args):
         epoch_loss_d = 0.0
 
         for batch in pbar:
+            _profile = (global_step < 3 or global_step % config.log_interval == 0)
+            if _profile:
+                _t0 = time.perf_counter()
+
             y_shifted, y_clean, target_f0 = batch
             y_shifted = y_shifted.to(device)
             y_clean = y_clean.to(device)
@@ -288,6 +293,11 @@ def train(args):
             min_len = min(y_shifted.shape[-1], y_clean.shape[-1])
             y_shifted = y_shifted[..., :min_len]
             y_clean = y_clean[..., :min_len]
+
+            if _profile:
+                torch.cuda.synchronize()
+                _t_data = time.perf_counter() - _t0
+                _t1 = time.perf_counter()
 
             # ----------------------------------------------------------------
             # Extract features (mel on GPU; F0 precomputed by WORLD)
@@ -307,6 +317,11 @@ def train(args):
                         mode="linear",
                         align_corners=False,
                     ).squeeze(1)
+
+            if _profile:
+                torch.cuda.synchronize()
+                _t_mel = time.perf_counter() - _t1
+                _t2 = time.perf_counter()
 
             # ----------------------------------------------------------------
             # Train Discriminator
@@ -329,6 +344,11 @@ def train(args):
             scaler.unscale_(opt_d)
             torch.nn.utils.clip_grad_norm_(discriminator.parameters(), config.grad_clip)
             scaler.step(opt_d)
+
+            if _profile:
+                torch.cuda.synchronize()
+                _t_dsc = time.perf_counter() - _t2
+                _t3 = time.perf_counter()
 
             # ----------------------------------------------------------------
             # Train Generator
@@ -366,6 +386,10 @@ def train(args):
             scaler.step(opt_g)
             scaler.update()
 
+            if _profile:
+                torch.cuda.synchronize()
+                _t_gen = time.perf_counter() - _t3
+
             # Logging
             epoch_loss_g += loss_g.item()
             epoch_loss_d += loss_d.item()
@@ -378,11 +402,25 @@ def train(args):
                 writer.add_scalar("train/loss_adv", loss_adv.item(), global_step)
                 writer.add_scalar("train/lr", opt_g.param_groups[0]["lr"], global_step)
 
-            pbar.set_postfix(
-                g=f"{loss_g.item():.2f}",
-                d=f"{loss_d.item():.2f}",
-                mel=f"{loss_mel.item():.1f}",
-            )
+            if _profile:
+                writer.add_scalar("profile/data_ms", _t_data * 1000, global_step)
+                writer.add_scalar("profile/mel_ms", _t_mel * 1000, global_step)
+                writer.add_scalar("profile/disc_ms", _t_dsc * 1000, global_step)
+                writer.add_scalar("profile/gen_ms", _t_gen * 1000, global_step)
+                pbar.set_postfix(
+                    g=f"{loss_g.item():.2f}",
+                    d=f"{loss_d.item():.2f}",
+                    io=f"{_t_data*1000:.0f}ms",
+                    ml=f"{_t_mel*1000:.0f}ms",
+                    dc=f"{_t_dsc*1000:.0f}ms",
+                    gn=f"{_t_gen*1000:.0f}ms",
+                )
+            else:
+                pbar.set_postfix(
+                    g=f"{loss_g.item():.2f}",
+                    d=f"{loss_d.item():.2f}",
+                    mel=f"{loss_mel.item():.1f}",
+                )
             global_step += 1
 
         scheduler_g.step()
